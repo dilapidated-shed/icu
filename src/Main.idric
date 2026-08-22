@@ -2,8 +2,8 @@ module Main
 
 import Http
 import System
+import Transport
 
-%default total
 
 usage : String
 usage =
@@ -24,18 +24,24 @@ parse_command ["post", text, body] =
     Right target_url => Right (post target_url body)
 parse_command _ = Left usage
 
+fail_with : String → IO ()
+fail_with problem = do
+  putStrLn problem
+  exitFailure
+
 run : List String → IO ()
 run arguments =
   case parse_command arguments of
-    Left problem => putStrLn problem
-    Right value =>
-      case render_request value of
-        Left problem => putStrLn problem
-        Right wire_request => putStr wire_request
+    Left problem => fail_with problem
+    Right value => do
+      outcome ← send_request value
+      case outcome of
+        Left problem => fail_with problem
+        Right status => exitWith (cast status)
 
 main : IO ()
 main = do
-  arguments <- getArgs
+  arguments ← getArgs
   case arguments of
     _ :: rest => run rest
-    [] => putStrLn usage
+    [] => fail_with usage

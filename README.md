@@ -2,8 +2,8 @@
 
 ICU is a deliberately small HTTP client written in Idriç.
 
-The old curl source is preserved unchanged under `old/` as reference material.
-The new program does not try to preserve curl's feature surface.
+The inherited curl source is preserved unchanged under `old/` as reference
+material. The new build does not compile or link curl.
 
 ## Scope
 
@@ -17,10 +17,8 @@ Exactly two requests are represented:
 - `GET`
 - `POST`
 
-Unsupported protocols and methods are not stored as strings waiting to fail later;
-they are absent from the request model.
-
-## Shape
+Unsupported protocols and methods are absent from the request model rather than
+stored as strings and rejected much later.
 
 ```idris
 choice url one_of
@@ -32,14 +30,14 @@ choice request one_of
   post url String
 ```
 
-A URL therefore carries its scheme, host, port, and request target. A request can
-only be GET or POST.
+`src/Http.idric` owns URL parsing and HTTP request rendering.
+`src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
+`native/transport.c` owns only sockets, OpenSSL, and response-body streaming.
+`src/Main.idric` owns the tiny command-line grammar.
 
-`src/Http.idric` owns URL parsing and HTTP/1.1 wire rendering. `src/Main.idric`
-owns the tiny command-line grammar. Transport is a separate boundary: this first
-slice deliberately does not hide the archived curl implementation behind the
-new API. The next transport slice can be small sockets for HTTP and one explicit
-TLS implementation for HTTPS without changing the semantic model.
+The C boundary independently refuses wire requests that do not begin with GET
+or POST. There is no protocol registry or generic method string in the active
+Edriç model.
 
 ## Commands
 
@@ -48,20 +46,40 @@ icu get https://example.com/
 icu post https://example.com/message hello
 ```
 
-For now the executable renders the exact HTTP/1.1 request that the transport will
-send. POST bodies are restricted to ASCII in this slice so `Content-Length` is
-unambiguous before a byte-oriented transport type is added.
+The first transport slice deliberately uses HTTP/1.0 plus `Connection: close`.
+That avoids chunked-response machinery while keeping ordinary HTTP and HTTPS
+GET/POST useful. Response headers are discarded and the response body is
+streamed to stdout.
+
+Current intentional limits:
+
+- no redirects, proxies, cookies, authentication helpers, compression, or custom methods
+- no FTP, SMTP, file URLs, or other curl protocols
+- URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
+- URL userinfo and IPv6 literals are not supported yet
+- POST bodies are ASCII-only until the Edriç boundary carries explicit UTF-8 bytes
 
 ## Build
 
-Build the Edriç compiler in `isomorphisms/Idric`, then use its Idris 2 executable
-to build `icu.ipkg`.
+Requirements: the Edriç/Idriç compiler fork, a C11 compiler, and OpenSSL.
 
-The source is ordinary Idris 2 plus the filename-scoped Edriç `choice ... one_of`
-syntax and Unicode function arrows.
+```sh
+make IDRIC=/opt/Idric/build/exec/idris2
+```
+
+Run the executable from the repository root so the Scheme C FFI can find the
+repo-local transport library:
+
+```sh
+./build/exec/icu get https://example.com/
+./build/exec/icu post https://example.com/message hello
+```
+
+`make check-native` compiles the native boundary with warnings promoted to
+errors.
 
 ## Reference source
 
 `old/` is the complete previous repository tree, currently curl at commit
-`5c61e168698a72b87437d58ed728bcdea6d5db42`. Its original licensing and attribution
-remain with that tree.
+`5c61e168698a72b87437d58ed728bcdea6d5db42`. Its original licensing and
+attribution remain intact there; the root `COPYING` is retained as well.

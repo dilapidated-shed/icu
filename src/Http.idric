@@ -74,6 +74,19 @@ drop_fragment [] = []
 drop_fragment ('#' :: _) = []
 drop_fragment (character :: rest) = character :: drop_fragment rest
 
+visible_http_character : Char → Bool
+visible_http_character character =
+  ord character > 32 && ord character < 127
+
+safe_authority_character : Char → Bool
+safe_authority_character character =
+  visible_http_character character && character /= '@'
+
+all_characters : (Char → Bool) → List Char → Bool
+all_characters predicate [] = True
+all_characters predicate (character :: rest) =
+  predicate character && all_characters predicate rest
+
 make_url :
   (String → Nat → String → url) →
   Nat →
@@ -81,19 +94,24 @@ make_url :
   Either String url
 make_url constructor default_port input =
   let (authority, raw_target) = split_authority input
+      request_characters = drop_fragment raw_target
       (host_characters, port_text) = split_port authority
-      request_target = pack (drop_fragment raw_target)
+      request_target = pack request_characters
       normalized_target = if request_target == "" then "/" else request_target
-  in case host_characters of
-       [] => Left "URL host is empty"
-       _ =>
-         let host_name = pack host_characters in
-           case port_text of
-             Nothing => Right (constructor host_name default_port normalized_target)
-             Just characters =>
-               case parse_port characters of
-                 Left problem => Left problem
-                 Right number => Right (constructor host_name number normalized_target)
+  in if not (all_characters safe_authority_character authority)
+       then Left "URL authority must be visible ASCII without userinfo"
+       else if not (all_characters visible_http_character request_characters)
+         then Left "URL target must be visible ASCII; percent-encode spaces or Unicode"
+         else case host_characters of
+           [] => Left "URL host is empty"
+           _ =>
+             let host_name = pack host_characters in
+               case port_text of
+                 Nothing => Right (constructor host_name default_port normalized_target)
+                 Just characters =>
+                   case parse_port characters of
+                     Left problem => Left problem
+                     Right number => Right (constructor host_name number normalized_target)
 
 public export
 parse_url : String → Either String url
@@ -149,13 +167,13 @@ public export
 render_request : request → Either String String
 render_request (get target_url) =
   Right $
-    "GET " ++ target target_url ++ " HTTP/1.1\r\n" ++
+    "GET " ++ target target_url ++ " HTTP/1.0\r\n" ++
     common_headers target_url ++
     "\r\n"
 render_request (post target_url body) =
   if ascii_body body
     then Right $
-      "POST " ++ target target_url ++ " HTTP/1.1\r\n" ++
+      "POST " ++ target target_url ++ " HTTP/1.0\r\n" ++
       common_headers target_url ++
       "Content-Type: text/plain; charset=utf-8\r\n" ++
       "Content-Length: " ++ show (length (unpack body)) ++ "\r\n" ++

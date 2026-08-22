@@ -1,6 +1,7 @@
 module Main
 
 import Http
+import System
 
 %default total
 
@@ -28,6 +29,18 @@ reject_other_scheme =
     Left _ => True
     Right _ => False
 
+reject_userinfo : Bool
+reject_userinfo =
+  case parse_url "https://name@example.com/" of
+    Left _ => True
+    Right _ => False
+
+reject_header_injection : Bool
+reject_header_injection =
+  case parse_url "https://example.com\r\nX-Fake: yes/" of
+    Left _ => True
+    Right _ => False
+
 render_get : Bool
 render_get =
   case parse_url "http://example.com/" of
@@ -35,7 +48,7 @@ render_get =
     Right target_url =>
       render_request (get target_url) ==
         Right
-          ("GET / HTTP/1.1\r\n" ++
+          ("GET / HTTP/1.0\r\n" ++
            "Host: example.com\r\n" ++
            "Connection: close\r\n" ++
            "User-Agent: icu/0.1\r\n" ++
@@ -50,10 +63,23 @@ reject_non_ascii_post =
         Left _ => True
         Right _ => False
 
+all_pass : Bool
+all_pass =
+  https_default &&
+  http_explicit_port &&
+  reject_other_scheme &&
+  reject_userinfo &&
+  reject_header_injection &&
+  render_get &&
+  reject_non_ascii_post
+
 main : IO ()
 main = do
   check "https default port, query, fragment" https_default
   check "http explicit port" http_explicit_port
   check "reject non-http scheme" reject_other_scheme
+  check "reject URL userinfo" reject_userinfo
+  check "reject header injection" reject_header_injection
   check "GET wire form" render_get
   check "POST byte-length boundary" reject_non_ascii_post
+  if all_pass then pure () else exitFailure
