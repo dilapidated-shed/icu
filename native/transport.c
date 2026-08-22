@@ -100,6 +100,9 @@ static int open_connection(const char *host, int port, int use_tls, connection *
         return 0;
     }
     SSL_CTX_set_verify(result->tls_context, SSL_VERIFY_PEER, NULL);
+#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
+    SSL_CTX_set_options(result->tls_context, SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
 
     result->tls = SSL_new(result->tls_context);
     if (result->tls == NULL) {
@@ -122,7 +125,7 @@ static int open_connection(const char *host, int port, int use_tls, connection *
     }
 
     if (SSL_set_fd(result->tls, result->socket_fd) != 1 || SSL_connect(result->tls) != 1) {
-        complain( "TLS handshake failed");
+        complain("TLS handshake failed");
         close_connection(result);
         return 0;
     }
@@ -135,7 +138,7 @@ static int write_all(connection *connection, const char *bytes, size_t length) {
         if (connection->tls != NULL) {
             size_t remaining = length - written;
             int amount = SSL_write(connection->tls, bytes + written,
-                                     (int)(remaining > 16384u ? 16384u : remaining));
+                                   (int)(remaining > 16384u ? 16384u : remaining));
             if (amount <= 0) {
                 int error = SSL_get_error(connection->tls, amount);
                 if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
