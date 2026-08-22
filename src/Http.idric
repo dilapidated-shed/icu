@@ -1,0 +1,164 @@
+module Http
+
+%default total
+
+public export
+choice url one_of
+  http_url String Nat String
+  https_url String Nat String
+
+public export
+choice request one_of
+  get url
+  post url String
+
+strip_prefix : List Char → List Char → Maybe (List Char)
+strip_prefix [] input = Just input
+strip_prefix _ [] = Nothing
+strip_prefix (expected :: prefix) (actual :: input) =
+  if expected == actual
+    then strip_prefix prefix input
+    else Nothing
+
+split_authority : List Char → (List Char, List Char)
+split_authority [] = ([], [])
+split_authority input@(character :: rest) =
+  case character of
+    '/' => ([], input)
+    '?' => ([], '/' :: input)
+    '#' => ([], [])
+    _ =>
+      let (authority, target) = split_authority rest in
+        (character :: authority, target)
+
+split_port : List Char → (List Char, Maybe (List Char))
+split_port [] = ([], Nothing)
+split_port (':' :: rest) = ([], Just rest)
+split_port (character :: rest) =
+  let (host_name, port_text) = split_port rest in
+    (character :: host_name, port_text)
+
+digit_value : Char → Maybe Nat
+digit_value '0' = Just 0
+digit_value '1' = Just 1
+digit_value '2' = Just 2
+digit_value '3' = Just 3
+digit_value '4' = Just 4
+digit_value '5' = Just 5
+digit_value '6' = Just 6
+digit_value '7' = Just 7
+digit_value '8' = Just 8
+digit_value '9' = Just 9
+digit_value _ = Nothing
+
+parse_digits : Nat → List Char → Maybe Nat
+parse_digits accumulated [] = Just accumulated
+parse_digits accumulated (character :: rest) =
+  case digit_value character of
+    Nothing => Nothing
+    Just digit => parse_digits (accumulated * 10 + digit) rest
+
+parse_port : List Char → Either String Nat
+parse_port [] = Left "port is empty"
+parse_port characters =
+  case parse_digits 0 characters of
+    Nothing => Left "port must contain only decimal digits"
+    Just 0 => Left "port must be between 1 and 65535"
+    Just number =>
+      if number <= 65535
+        then Right number
+        else Left "port must be between 1 and 65535"
+
+drop_fragment : List Char → List Char
+drop_fragment [] = []
+drop_fragment ('#' :: _) = []
+drop_fragment (character :: rest) = character :: drop_fragment rest
+
+make_url :
+  (String → Nat → String → url) →
+  Nat →
+  List Char →
+  Either String url
+make_url constructor default_port input =
+  let (authority, raw_target) = split_authority input
+      (host_characters, port_text) = split_port authority
+      request_target = pack (drop_fragment raw_target)
+      normalized_target = if request_target == "" then "/" else request_target
+  in case host_characters of
+       [] => Left "URL host is empty"
+       _ =>
+         let host_name = pack host_characters in
+           case port_text of
+             Nothing => Right (constructor host_name default_port normalized_target)
+             Just characters =>
+               case parse_port characters of
+                 Left problem => Left problem
+                 Right number => Right (constructor host_name number normalized_target)
+
+public export
+parse_url : String → Either String url
+parse_url text =
+  case strip_prefix (unpack "http://") (unpack text) of
+    Just rest => make_url http_url 80 rest
+    Nothing =>
+      case strip_prefix (unpack "https://") (unpack text) of
+        Just rest => make_url https_url 443 rest
+        Nothing => Left "URL must begin with http:// or https://"
+
+public export
+host : url → String
+host (http_url name _ _) = name
+host (https_url name _ _) = name
+
+public export
+port : url → Nat
+port (http_url _ number _) = number
+port (https_url _ number _) = number
+
+public export
+target : url → String
+target (http_url _ _ path) = path
+target (https_url _ _ path) = path
+
+public export
+secure : url → Bool
+secure (http_url _ _ _) = False
+secure (https_url _ _ _) = True
+
+public export
+authority : url → String
+authority (http_url name 80 _) = name
+authority (https_url name 443 _) = name
+authority value = host value ++ ":" ++ show (port value)
+
+common_headers : url → String
+common_headers target_url =
+  "Host: " ++ authority target_url ++ "\r\n" ++
+  "Connection: close\r\n" ++
+  "User-Agent: icu/0.1\r\n"
+
+ascii_characters : List Char → Bool
+ascii_characters [] = True
+ascii_characters (character :: rest) =
+  ord character < 128 && ascii_characters rest
+
+ascii_body : String → Bool
+ascii_body = ascii_characters . unpack
+
+public export
+render_request : request → Either String String
+render_request (get target_url) =
+  Right $
+    "GET " ++ target target_url ++ " HTTP/1.1\r\n" ++
+    common_headers target_url ++
+    "\r\n"
+render_request (post target_url body) =
+  if ascii_body body
+    then Right $
+      "POST " ++ target target_url ++ " HTTP/1.1\r\n" ++
+      common_headers target_url ++
+      "Content-Type: text/plain; charset=utf-8\r\n" ++
+      "Content-Length: " ++ show (length (unpack body)) ++ "\r\n" ++
+      "\r\n" ++
+      body
+    else Left "POST body is ASCII-only until the transport owns UTF-8 bytes"

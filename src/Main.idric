@@ -1,0 +1,41 @@
+module Main
+
+import Http
+import System
+
+%default total
+
+usage : String
+usage =
+  "usage:\n" ++
+  "  icu get  http://host/path\n" ++
+  "  icu get  https://host/path\n" ++
+  "  icu post http://host/path BODY\n" ++
+  "  icu post https://host/path BODY"
+
+parse_command : List String → Either String request
+parse_command ["get", text] =
+  case parse_url text of
+    Left problem => Left problem
+    Right target_url => Right (get target_url)
+parse_command ["post", text, body] =
+  case parse_url text of
+    Left problem => Left problem
+    Right target_url => Right (post target_url body)
+parse_command _ = Left usage
+
+run : List String → IO ()
+run arguments =
+  case parse_command arguments of
+    Left problem => putStrLn problem
+    Right value =>
+      case render_request value of
+        Left problem => putStrLn problem
+        Right wire_request => putStr wire_request
+
+main : IO ()
+main = do
+  arguments <- getArgs
+  case arguments of
+    _ :: rest => run rest
+    [] => putStrLn usage

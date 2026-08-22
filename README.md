@@ -1,66 +1,67 @@
-<!--
-Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+# ICU
 
-SPDX-License-Identifier: curl
--->
+ICU is a deliberately small HTTP client written in Idriç.
 
-# [![curl logo](https://curl.se/logo/curl-logo.svg)](https://curl.se/)
+The old curl source is preserved unchanged under `old/` as reference material.
+The new program does not try to preserve curl's feature surface.
 
-curl is a command-line tool for transferring data from or to a server using
-URLs. It supports these protocols: DICT, FILE, FTP, FTPS, GOPHER, GOPHERS,
-HTTP, HTTPS, IMAP, IMAPS, LDAP, LDAPS, MQTT, MQTTS, POP3, POP3S, RTSP, SCP,
-SFTP, SMB, SMBS, SMTP, SMTPS, TELNET, TFTP, WS and WSS.
+## Scope
 
-Learn how to use curl by reading [the
-man page](https://curl.se/docs/manpage.html) or [everything
-curl](https://everything.curl.dev/).
+Exactly two URL schemes are represented:
 
-Find out how to install curl by reading [the INSTALL
-document](https://curl.se/docs/install.html).
+- `http://`
+- `https://`
 
-libcurl is the library curl is using to do its job. It is readily available to
-be used by your software. Read [the libcurl
-man page](https://curl.se/libcurl/c/libcurl.html) to learn how.
+Exactly two requests are represented:
 
-## Open Source
+- `GET`
+- `POST`
 
-curl is Open Source and is distributed under an MIT-like
-[license](https://curl.se/docs/copyright.html).
+Unsupported protocols and methods are not stored as strings waiting to fail later;
+they are absent from the request model.
 
-## Contact
+## Shape
 
-Contact us on a suitable [mailing list](https://curl.se/mail/) or
-use GitHub [issues](https://github.com/curl/curl/issues)/
-[pull requests](https://github.com/curl/curl/pulls)/
-[discussions](https://github.com/curl/curl/discussions).
+```idris
+choice url one_of
+  http_url String Nat String
+  https_url String Nat String
 
-All contributors to the project are listed in [the THANKS
-document](https://curl.se/docs/thanks.html).
+choice request one_of
+  get url
+  post url String
+```
 
-## Commercial support
+A URL therefore carries its scheme, host, port, and request target. A request can
+only be GET or POST.
 
-For commercial support, maybe private and dedicated help with your problems or
-applications using (lib)curl visit [the support page](https://curl.se/support.html).
+`src/Http.idric` owns URL parsing and HTTP/1.1 wire rendering. `src/Main.idric`
+owns the tiny command-line grammar. Transport is a separate boundary: this first
+slice deliberately does not hide the archived curl implementation behind the
+new API. The next transport slice can be small sockets for HTTP and one explicit
+TLS implementation for HTTPS without changing the semantic model.
 
-## Website
+## Commands
 
-Visit the [curl website](https://curl.se/) for the latest news and downloads.
+```text
+icu get https://example.com/
+icu post https://example.com/message hello
+```
 
-## Source code
+For now the executable renders the exact HTTP/1.1 request that the transport will
+send. POST bodies are restricted to ASCII in this slice so `Content-Length` is
+unambiguous before a byte-oriented transport type is added.
 
-Download the latest source from the Git server:
+## Build
 
-    git clone https://github.com/curl/curl
+Build the Edriç compiler in `isomorphisms/Idric`, then use its Idris 2 executable
+to build `icu.ipkg`.
 
-## Security problems
+The source is ordinary Idris 2 plus the filename-scoped Edriç `choice ... one_of`
+syntax and Unicode function arrows.
 
-Report suspected security problems
-[privately](https://curl.se/dev/vuln-disclosure.html) and not in public.
+## Reference source
 
-## Backers
-
-Thank you to all our backers :pray: [Become a backer](https://opencollective.com/curl#section-contribute).
-
-## Sponsors
-
-Support this project by becoming a [sponsor](https://curl.se/sponsors.html).
+`old/` is the complete previous repository tree, currently curl at commit
+`5c61e168698a72b87437d58ed728bcdea6d5db42`. Its original licensing and attribution
+remain with that tree.
