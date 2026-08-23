@@ -3,7 +3,7 @@ name: Idric end to end
 on:
   push:
     branches:
-      - edric-http-get-post
+      - master
   pull_request:
   workflow_dispatch:
 
@@ -14,6 +14,13 @@ jobs:
       - name: Checkout ICU
         uses: actions/checkout@v4
 
+      - name: Checkout Idric compiler
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric
+          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          path: .tools/Idric
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -21,14 +28,15 @@ jobs:
 
       - name: Build Idric compiler
         run: |
-          git clone --depth 1 https://github.com/isomorphisms/Idric.git "$RUNNER_TEMP/Idric"
-          make -C "$RUNNER_TEMP/Idric" bootstrap SCHEME=scheme
-          "$RUNNER_TEMP/Idric/build/exec/idris2" --version
+          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --version
 
       - name: Compile ICU through Idric
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
         run: |
           make check-native
-          make IDRIC="$RUNNER_TEMP/Idric/build/exec/idris2"
+          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
 
       - name: Start deterministic HTTP and HTTPS servers
         run: |
