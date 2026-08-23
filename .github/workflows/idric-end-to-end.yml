@@ -38,6 +38,13 @@ jobs:
           make check-native
           make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
 
+      - name: Run pure Idric HTTP model tests
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
+          ./build/exec/icu-http-tests
+
       - name: Start deterministic HTTP and HTTPS servers
         run: |
           mkdir -p "$RUNNER_TEMP/icu-tls"
