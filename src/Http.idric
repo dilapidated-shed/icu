@@ -15,9 +15,9 @@ choice request one_of
 strip_prefix : List Char → List Char → Maybe (List Char)
 strip_prefix [] input = Just input
 strip_prefix _ [] = Nothing
-strip_prefix (expected :: prefix) (actual :: input) =
+strip_prefix (expected :: remaining_prefix) (actual :: input) =
   if expected == actual
-    then strip_prefix prefix input
+    then strip_prefix remaining_prefix input
     else Nothing
 
 split_authority : List Char → (List Char, List Char)
@@ -92,7 +92,7 @@ make_url :
   Nat →
   List Char →
   Either String url
-make_url constructor default_port input =
+make_url build_url default_port input =
   let (authority, raw_target) = split_authority input
       request_characters = drop_fragment raw_target
       (host_characters, port_text) = split_port authority
@@ -107,11 +107,11 @@ make_url constructor default_port input =
            _ =>
              let host_name = pack host_characters in
                case port_text of
-                 Nothing => Right (constructor host_name default_port normalized_target)
+                 Nothing => Right (build_url host_name default_port normalized_target)
                  Just characters =>
                    case parse_port characters of
                      Left problem => Left problem
-                     Right number => Right (constructor host_name number normalized_target)
+                     Right number => Right (build_url host_name number normalized_target)
 
 public export
 parse_url : String → Either String url
