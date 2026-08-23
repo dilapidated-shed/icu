@@ -47,11 +47,12 @@ icu get https://example.com/
 icu post https://example.com/message hello
 ```
 
-The transport uses HTTP/1.0 plus `Connection: close`. That keeps ordinary HTTP
-and HTTPS GET/POST useful without a persistent-connection subsystem. Response
-headers are bounded to 64 KiB. The status line and `Location` are parsed before
-the final response body is streamed byte-for-byte to stdout; other response
-headers remain internal for now.
+The transport uses HTTP/1.0 plus `Connection: close`. Requests advertise
+`Accept-Encoding: identity`, so HTML and image bodies can be consumed directly
+without first adding gzip/brotli decoding. Response headers are bounded to
+64 KiB. The status line and `Location` are parsed before the final response body
+is streamed byte-for-byte to stdout; other response headers remain internal for
+now.
 
 ### Redirects
 
@@ -79,7 +80,8 @@ icu get https://example.com/cover.jpg > cover.jpg
 
 Current intentional limits:
 
-- no proxies, cookies, authentication helpers, compression, or custom methods
+- no proxies, cookies, authentication helpers, or custom methods
+- no compressed-response decoder; requests currently ask servers for identity encoding
 - POST redirects are not followed
 - no FTP, SMTP, file URLs, or other curl protocols
 - URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
