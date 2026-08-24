@@ -1,66 +1,85 @@
-<!--
-Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+# ICU
 
-SPDX-License-Identifier: curl
--->
+ICU is a deliberately small HTTP client written in Idriç.
 
-# [![curl logo](https://curl.se/logo/curl-logo.svg)](https://curl.se/)
+The inherited curl source is preserved unchanged under `old/` as reference
+material. The new build does not compile or link curl.
 
-curl is a command-line tool for transferring data from or to a server using
-URLs. It supports these protocols: DICT, FILE, FTP, FTPS, GOPHER, GOPHERS,
-HTTP, HTTPS, IMAP, IMAPS, LDAP, LDAPS, MQTT, MQTTS, POP3, POP3S, RTSP, SCP,
-SFTP, SMB, SMBS, SMTP, SMTPS, TELNET, TFTP, WS and WSS.
+## Scope
 
-Learn how to use curl by reading [the
-man page](https://curl.se/docs/manpage.html) or [everything
-curl](https://everything.curl.dev/).
+Exactly two URL schemes are represented:
 
-Find out how to install curl by reading [the INSTALL
-document](https://curl.se/docs/install.html).
+- `http://`
+- `https://`
 
-libcurl is the library curl is using to do its job. It is readily available to
-be used by your software. Read [the libcurl
-man page](https://curl.se/libcurl/c/libcurl.html) to learn how.
+Exactly two requests are represented:
 
-## Open Source
+- `GET`
+- `POST`
 
-curl is Open Source and is distributed under an MIT-like
-[license](https://curl.se/docs/copyright.html).
+Unsupported protocols and methods are absent from the request model rather than
+stored as strings and rejected much later.
 
-## Contact
+```idris
+choice url one_of
+  http_url String Nat String
+  https_url String Nat String
 
-Contact us on a suitable [mailing list](https://curl.se/mail/) or
-use GitHub [issues](https://github.com/curl/curl/issues)/
-[pull requests](https://github.com/curl/curl/pulls)/
-[discussions](https://github.com/curl/curl/discussions).
+choice request one_of
+  get url
+  post url String
+```
 
-All contributors to the project are listed in [the THANKS
-document](https://curl.se/docs/thanks.html).
+`src/Http.idric` owns URL parsing and HTTP request rendering.
+`src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
+`native/transport.c` owns only sockets, OpenSSL, and response-body streaming.
+`src/Main.idric` owns the tiny command-line grammar.
 
-## Commercial support
+The C boundary independently refuses wire requests that do not begin with GET
+or POST. There is no protocol registry or generic method string in the active
+Edriç model.
 
-For commercial support, maybe private and dedicated help with your problems or
-applications using (lib)curl visit [the support page](https://curl.se/support.html).
+## Commands
 
-## Website
+```text
+icu get https://example.com/
+icu post https://example.com/message hello
+```
 
-Visit the [curl website](https://curl.se/) for the latest news and downloads.
+The first transport slice deliberately uses HTTP/1.0 plus `Connection: close`.
+That avoids chunked-response machinery while keeping ordinary HTTP and HTTPS
+GET/POST useful. Response headers are discarded and the response body is
+streamed to stdout.
 
-## Source code
+Current intentional limits:
 
-Download the latest source from the Git server:
+- no redirects, proxies, cookies, authentication helpers, compression, or custom methods
+- no FTP, SMTP, file URLs, or other curl protocols
+- URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
+- URL userinfo and IPv6 literals are not supported yet
+- POST bodies are ASCII-only until the Edriç boundary carries explicit UTF-8 bytes
 
-    git clone https://github.com/curl/curl
+## Build
 
-## Security problems
+Requirements: the Edriç/Idriç compiler fork, a C11 compiler, and OpenSSL.
 
-Report suspected security problems
-[privately](https://curl.se/dev/vuln-disclosure.html) and not in public.
+```sh
+make IDRIC=/opt/Idric/build/exec/idris2
+```
 
-## Backers
+Run the executable from the repository root so the Scheme C FFI can find the
+repo-local transport library:
 
-Thank you to all our backers :pray: [Become a backer](https://opencollective.com/curl#section-contribute).
+```sh
+./build/exec/icu get https://example.com/
+./build/exec/icu post https://example.com/message hello
+```
 
-## Sponsors
+`make check-native` compiles the native boundary with warnings promoted to
+errors.
 
-Support this project by becoming a [sponsor](https://curl.se/sponsors.html).
+## Reference source
+
+`old/` is the complete previous repository tree, currently curl at commit
+`5c61e168698a72b87437d58ed728bcdea6d5db42`. Its original licensing and
+attribution remain intact there; the root `COPYING` is retained as well.

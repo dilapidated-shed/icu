@@ -1,0 +1,85 @@
+module Main
+
+import Http
+import System
+
+%default total
+
+check : String → Bool → IO ()
+check name True = putStrLn ("ok   " ++ name)
+check name False = putStrLn ("FAIL " ++ name)
+
+https_default : Bool
+https_default =
+  case parse_url "https://example.com/a?b=1#fragment" of
+    Right (https_url name number path) =>
+      name == "example.com" && number == 443 && path == "/a?b=1"
+    _ => False
+
+http_explicit_port : Bool
+http_explicit_port =
+  case parse_url "http://localhost:8080/hello" of
+    Right (http_url name number path) =>
+      name == "localhost" && number == 8080 && path == "/hello"
+    _ => False
+
+reject_other_scheme : Bool
+reject_other_scheme =
+  case parse_url "ftp://example.com/file" of
+    Left _ => True
+    Right _ => False
+
+reject_userinfo : Bool
+reject_userinfo =
+  case parse_url "https://name@example.com/" of
+    Left _ => True
+    Right _ => False
+
+reject_header_injection : Bool
+reject_header_injection =
+  case parse_url "https://example.com\r\nX-Fake: yes/" of
+    Left _ => True
+    Right _ => False
+
+render_get : Bool
+render_get =
+  case parse_url "http://example.com/" of
+    Left _ => False
+    Right target_url =>
+      render_request (get target_url) ==
+        Right
+          ("GET / HTTP/1.0\r\n" ++
+           "Host: example.com\r\n" ++
+           "Connection: close\r\n" ++
+           "User-Agent: icu/0.1\r\n" ++
+           "\r\n")
+
+reject_non_ascii_post : Bool
+reject_non_ascii_post =
+  case parse_url "https://example.com/message" of
+    Left _ => False
+    Right target_url =>
+      case render_request (post target_url "café") of
+        Left _ => True
+        Right _ => False
+
+all_pass : Bool
+all_pass =
+  https_default &&
+  http_explicit_port &&
+  reject_other_scheme &&
+  reject_userinfo &&
+  reject_header_injection &&
+  render_get &&
+  reject_non_ascii_post
+
+main : IO ()
+main = do
+  check "https default port, query, fragment" https_default
+  check "http explicit port" http_explicit_port
+  check "reject non-http scheme" reject_other_scheme
+  check "reject URL userinfo" reject_userinfo
+  check "reject header injection" reject_header_injection
+  check "GET wire form" render_get
+  check "POST byte-length boundary" reject_non_ascii_post
+  if all_pass then pure () else exitFailure

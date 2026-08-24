@@ -1,0 +1,29 @@
+module Transport
+
+import Http
+
+%foreign "C:icu_send_http,libicu_transport"
+prim_send_http : String → Int → String → PrimIO Int
+
+%foreign "C:icu_send_https,libicu_transport"
+prim_send_https : String → Int → String → PrimIO Int
+
+transmit : url → String → IO Int
+transmit (http_url name number _) wire_request =
+  primIO (prim_send_http name (cast number) wire_request)
+transmit (https_url name number _) wire_request =
+  primIO (prim_send_https name (cast number) wire_request)
+
+public export
+send_request : request → IO (Either String Int)
+send_request value =
+  case render_request value of
+    Left problem => pure (Left problem)
+    Right wire_request =>
+      case value of
+        get target_url => do
+          status ← transmit target_url wire_request
+          pure (Right status)
+        post target_url _ => do
+          status ← transmit target_url wire_request
+          pure (Right status)
