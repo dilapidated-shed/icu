@@ -51,6 +51,7 @@ render_get =
           ("GET / HTTP/1.0\r\n" ++
            "Host: example.com\r\n" ++
            "Connection: close\r\n" ++
+           "Accept-Encoding: identity\r\n" ++
            "User-Agent: icu/0.1\r\n" ++
            "\r\n")
 
@@ -80,6 +81,6 @@ main = do
   check "reject non-http scheme" reject_other_scheme
   check "reject URL userinfo" reject_userinfo
   check "reject header injection" reject_header_injection
-  check "GET wire form" render_get
+  check "GET wire form requests identity encoding" render_get
   check "POST byte-length boundary" reject_non_ascii_post
   if all_pass then pure () else exitFailure

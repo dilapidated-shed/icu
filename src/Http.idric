@@ -153,6 +153,7 @@ common_headers : url → String
 common_headers target_url =
   "Host: " ++ authority target_url ++ "\r\n" ++
   "Connection: close\r\n" ++
+  "Accept-Encoding: identity\r\n" ++
   "User-Agent: icu/0.1\r\n"
 
 ascii_characters : List Char → Bool

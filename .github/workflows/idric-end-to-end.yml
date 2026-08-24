@@ -38,6 +38,13 @@ jobs:
           make check-native
           make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
 
+      - name: Run pure Idric HTTP model tests
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
+          ./build/exec/icu-http-tests
+
       - name: Start deterministic HTTP and HTTPS servers
         run: |
           mkdir -p "$RUNNER_TEMP/icu-tls"
@@ -65,16 +72,39 @@ jobs:
               def log_message(self, format, *args):
                   pass
 
-              def reply(self, body):
-                  encoded = body.encode("ascii")
+              def reply_bytes(self, body, content_type="application/octet-stream"):
                   self.send_response(200)
-                  self.send_header("Content-Type", "text/plain")
-                  self.send_header("Content-Length", str(len(encoded)))
+                  self.send_header("Content-Type", content_type)
+                  self.send_header("Content-Length", str(len(body)))
                   self.end_headers()
-                  self.wfile.write(encoded)
+                  self.wfile.write(body)
+
+              def reply(self, body):
+                  self.reply_bytes(body.encode("ascii"), "text/plain")
+
+              def redirect(self, status, location):
+                  self.send_response(status)
+                  self.send_header("Location", location)
+                  self.end_headers()
 
               def do_GET(self):
-                  self.reply("GET " + self.path)
+                  if self.path == "/redirect/start":
+                      self.redirect(302, "/redirect/middle")
+                  elif self.path == "/redirect/middle":
+                      self.redirect(
+                          301,
+                          "http://127.0.0.1:18080/redirect/final?via=absolute#ignored",
+                      )
+                  elif self.path == "/redirect/relative/base":
+                      self.redirect(302, "next")
+                  elif self.path == "/redirect/loop":
+                      self.redirect(302, "/redirect/loop")
+                  elif self.path == "/secure-redirect":
+                      self.redirect(307, "/secure-final")
+                  elif self.path == "/binary":
+                      self.reply_bytes(bytes((0, 1, 2, 255, 10, 13)))
+                  else:
+                      self.reply("GET " + self.path)
 
               def do_POST(self):
                   length = int(self.headers.get("Content-Length", "0"))
@@ -100,7 +130,7 @@ jobs:
           echo $! > "$RUNNER_TEMP/icu-server.pid"
           sleep 1
 
-      - name: Run compiled GET and POST over HTTP and verified HTTPS
+      - name: Run compiled HTTP, HTTPS, redirect, and binary-body checks
         env:
           SSL_CERT_FILE: ${{ runner.temp }}/icu-tls/ca.pem
         run: |
@@ -108,6 +138,28 @@ jobs:
           test "$(./build/exec/icu post http://127.0.0.1:18080/post hello)" = 'POST /post hello'
           test "$(./build/exec/icu get https://localhost:18443/secure)" = 'GET /secure'
           test "$(./build/exec/icu post https://localhost:18443/secure-post hello)" = 'POST /secure-post hello'
+
+          test "$(./build/exec/icu get http://127.0.0.1:18080/redirect/start)" = \
+            'GET /redirect/final?via=absolute'
+          test "$(./build/exec/icu get http://127.0.0.1:18080/redirect/relative/base)" = \
+            'GET /redirect/relative/next'
+          test "$(./build/exec/icu get https://localhost:18443/secure-redirect)" = \
+            'GET /secure-final'
+
+          ./build/exec/icu get http://127.0.0.1:18080/binary > "$RUNNER_TEMP/icu-binary.out"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path(os.environ["RUNNER_TEMP"]) / "icu-binary.out"
+          assert path.read_bytes() == bytes((0, 1, 2, 255, 10, 13))
+          PY
+
+          if ./build/exec/icu get http://127.0.0.1:18080/redirect/loop \
+              > "$RUNNER_TEMP/icu-loop.out" 2> "$RUNNER_TEMP/icu-loop.err"; then
+            echo "redirect loop unexpectedly succeeded" >&2
+            exit 1
+          fi
+          grep -F 'icu: too many redirects' "$RUNNER_TEMP/icu-loop.err"
 
       - name: Show server log on failure
         if: failure()

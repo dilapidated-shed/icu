@@ -32,7 +32,8 @@ choice request one_of
 
 `src/Http.idric` owns URL parsing and HTTP request rendering.
 `src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
-`native/transport.c` owns only sockets, OpenSSL, and response-body streaming.
+`native/transport.c` owns sockets, OpenSSL, response framing, and the small
+amount of response-header handling needed to keep GET useful on the web.
 `src/Main.idric` owns the tiny command-line grammar.
 
 The C boundary independently refuses wire requests that do not begin with GET
@@ -46,14 +47,42 @@ icu get https://example.com/
 icu post https://example.com/message hello
 ```
 
-The first transport slice deliberately uses HTTP/1.0 plus `Connection: close`.
-That avoids chunked-response machinery while keeping ordinary HTTP and HTTPS
-GET/POST useful. Response headers are discarded and the response body is
-streamed to stdout.
+The transport uses HTTP/1.0 plus `Connection: close`. Requests advertise
+`Accept-Encoding: identity`, so HTML and image bodies can be consumed directly
+without first adding gzip/brotli decoding. Response headers are bounded to
+64 KiB. The status line and `Location` are parsed before the final response body
+is streamed byte-for-byte to stdout; other response headers remain internal for
+now.
+
+### Redirects
+
+GET follows at most eight redirects for status 301, 302, 303, 307, or 308.
+Supported `Location` forms are:
+
+- absolute `http://` and `https://` URLs;
+- scheme-relative URLs beginning `//`;
+- root-relative paths beginning `/`;
+- ordinary relative paths;
+- query-only redirects.
+
+Fragments are removed before the redirected request. Redirected GET preserves
+the original request headers except that the request target and `Host` header
+are rewritten for the new endpoint. Cross-scheme redirects reselect plain TCP
+or verified TLS from the destination. POST redirects are deliberately not
+followed yet because 301/302/303 method rewriting needs an explicit Idriç policy.
+
+Response bodies are binary-safe: an image can be fetched directly to a file,
+for example:
+
+```sh
+icu get https://example.com/cover.jpg > cover.jpg
+```
 
 Current intentional limits:
 
-- no redirects, proxies, cookies, authentication helpers, compression, or custom methods
+- no proxies, cookies, authentication helpers, or custom methods
+- no compressed-response decoder; requests currently ask servers for identity encoding
+- POST redirects are not followed
 - no FTP, SMTP, file URLs, or other curl protocols
 - URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
 - URL userinfo and IPv6 literals are not supported yet

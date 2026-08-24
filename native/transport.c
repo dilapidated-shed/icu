@@ -1,21 +1,41 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <errno.h>
 #include <netdb.h>
 #include <openssl/ssl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #define MAX_HEADER_BYTES (64u * 1024u)
+#define MAX_LOCATION_BYTES 4096u
+#define MAX_HOST_BYTES 1024u
+#define MAX_TARGET_BYTES (16u * 1024u)
+#define MAX_REDIRECTS 8
 
 typedef struct {
     int socket_fd;
     SSL_CTX *tls_context;
     SSL *tls;
 } connection;
+
+typedef struct {
+    int status;
+    int has_location;
+    char location[MAX_LOCATION_BYTES];
+} response_head;
+
+typedef struct {
+    int use_tls;
+    int port;
+    char host[MAX_HOST_BYTES];
+    char target[MAX_TARGET_BYTES];
+} endpoint;
 
 static void complain(const char *message) {
     fprintf(stderr, "icu: %s\n", message);
@@ -205,12 +225,81 @@ static int write_stdout(const char *bytes, size_t length) {
     return fwrite(bytes, 1, length, stdout) == length;
 }
 
-static int copy_response_body(connection *connection) {
-    char headers[MAX_HEADER_BYTES];
+static int parse_status(const char *headers, size_t length) {
+    const char *line_end = memchr(headers, '\n', length);
+    size_t line_length = line_end != NULL ? (size_t)(line_end - headers) : length;
+    const char *space = memchr(headers, ' ', line_length);
+    if (space == NULL || (size_t)(headers + line_length - space) < 4u) {
+        return -1;
+    }
+    if (!isdigit((unsigned char)space[1]) ||
+        !isdigit((unsigned char)space[2]) ||
+        !isdigit((unsigned char)space[3])) {
+        return -1;
+    }
+    return (space[1] - '0') * 100 + (space[2] - '0') * 10 + (space[3] - '0');
+}
+
+static int copy_header_value(const char *headers, size_t header_length,
+                             const char *wanted, char *output, size_t output_capacity) {
+    size_t wanted_length = strlen(wanted);
+    const char *cursor = headers;
+    const char *end = headers + header_length;
+
+    const char *first_line = memchr(cursor, '\n', (size_t)(end - cursor));
+    if (first_line == NULL) {
+        return 0;
+    }
+    cursor = first_line + 1;
+
+    while (cursor < end) {
+        const char *line_end = memchr(cursor, '\n', (size_t)(end - cursor));
+        if (line_end == NULL) {
+            line_end = end;
+        }
+        const char *trimmed_end = line_end;
+        if (trimmed_end > cursor && trimmed_end[-1] == '\r') {
+            --trimmed_end;
+        }
+        if (trimmed_end == cursor) {
+            return 0;
+        }
+
+        const char *colon = memchr(cursor, ':', (size_t)(trimmed_end - cursor));
+        if (colon != NULL && (size_t)(colon - cursor) == wanted_length &&
+            strncasecmp(cursor, wanted, wanted_length) == 0) {
+            const char *value = colon + 1;
+            while (value < trimmed_end && (*value == ' ' || *value == '\t')) {
+                ++value;
+            }
+            while (trimmed_end > value &&
+                   (trimmed_end[-1] == ' ' || trimmed_end[-1] == '\t')) {
+                --trimmed_end;
+            }
+            size_t value_length = (size_t)(trimmed_end - value);
+            if (value_length == 0 || value_length >= output_capacity) {
+                return 0;
+            }
+            memcpy(output, value, value_length);
+            output[value_length] = '\0';
+            return 1;
+        }
+        cursor = line_end < end ? line_end + 1 : end;
+    }
+    return 0;
+}
+
+static int read_response_head(connection *connection, response_head *head,
+                              char *body_prefix, size_t body_capacity,
+                              size_t *body_length) {
+    char headers[MAX_HEADER_BYTES + 1];
     size_t header_bytes = 0;
     char buffer[16384];
 
-    while (header_bytes < sizeof(headers)) {
+    *body_length = 0;
+    memset(head, 0, sizeof(*head));
+
+    while (header_bytes < MAX_HEADER_BYTES) {
         ssize_t amount = read_some(connection, buffer, sizeof(buffer));
         if (amount <= 0) {
             complain(amount == 0 ? "response ended before its headers" : "response read failed");
@@ -218,29 +307,35 @@ static int copy_response_body(connection *connection) {
         }
 
         size_t bytes_read = (size_t)amount;
-        if (header_bytes + bytes_read > sizeof(headers)) {
-            break;
+        if (header_bytes + bytes_read > MAX_HEADER_BYTES) {
+            complain("response headers are too large");
+            return 0;
         }
         memcpy(headers + header_bytes, buffer, bytes_read);
         header_bytes += bytes_read;
+        headers[header_bytes] = '\0';
 
         char *body = find_header_end(headers, header_bytes);
         if (body != NULL) {
-            size_t body_bytes = header_bytes - (size_t)(body - headers);
-            if (body_bytes != 0 && !write_stdout(body, body_bytes)) {
-                complain("could not write response body");
+            size_t head_length = (size_t)(body - headers);
+            head->status = parse_status(headers, head_length);
+            if (head->status < 100 || head->status > 999) {
+                complain("invalid HTTP status line");
                 return 0;
             }
-            for (;;) {
-                amount = read_some(connection, buffer, sizeof(buffer));
-                if (amount == 0) {
-                    return fflush(stdout) == 0;
-                }
-                if (amount < 0 || !write_stdout(buffer, (size_t)amount)) {
-                    complain(amount < 0 ? "response read failed" : "could not write response body");
-                    return 0;
-                }
+            head->has_location = copy_header_value(
+                headers, head_length, "Location", head->location, sizeof(head->location));
+
+            size_t available_body = header_bytes - head_length;
+            if (available_body > body_capacity) {
+                complain("response prefix is too large");
+                return 0;
             }
+            if (available_body != 0) {
+                memcpy(body_prefix, body, available_body);
+            }
+            *body_length = available_body;
+            return 1;
         }
     }
 
@@ -248,8 +343,317 @@ static int copy_response_body(connection *connection) {
     return 0;
 }
 
+static int copy_remaining_body(connection *connection, const char *prefix, size_t prefix_length) {
+    char buffer[16384];
+    if (prefix_length != 0 && !write_stdout(prefix, prefix_length)) {
+        complain("could not write response body");
+        return 0;
+    }
+    for (;;) {
+        ssize_t amount = read_some(connection, buffer, sizeof(buffer));
+        if (amount == 0) {
+            return fflush(stdout) == 0;
+        }
+        if (amount < 0 || !write_stdout(buffer, (size_t)amount)) {
+            complain(amount < 0 ? "response read failed" : "could not write response body");
+            return 0;
+        }
+    }
+}
+
+static int redirect_status(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+static int visible_url_bytes(const char *text) {
+    for (const unsigned char *cursor = (const unsigned char *)text; *cursor != '\0'; ++cursor) {
+        if (*cursor <= 32 || *cursor >= 127) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void drop_fragment(char *text) {
+    char *fragment = strchr(text, '#');
+    if (fragment != NULL) {
+        *fragment = '\0';
+    }
+}
+
+static int parse_port_text(const char *text, int *port) {
+    if (*text == '\0') {
+        return 0;
+    }
+    long value = 0;
+    for (const unsigned char *cursor = (const unsigned char *)text; *cursor != '\0'; ++cursor) {
+        if (!isdigit(*cursor)) {
+            return 0;
+        }
+        value = value * 10 + (*cursor - '0');
+        if (value > 65535) {
+            return 0;
+        }
+    }
+    if (value < 1) {
+        return 0;
+    }
+    *port = (int)value;
+    return 1;
+}
+
+static int parse_authority(const char *authority, int default_port, endpoint *result) {
+    size_t length = strlen(authority);
+    if (length == 0 || length >= MAX_HOST_BYTES || strchr(authority, '@') != NULL ||
+        authority[0] == '[' || strchr(authority, ']') != NULL) {
+        return 0;
+    }
+
+    const char *colon = strrchr(authority, ':');
+    if (colon != NULL) {
+        size_t host_length = (size_t)(colon - authority);
+        if (host_length == 0 || host_length >= sizeof(result->host)) {
+            return 0;
+        }
+        memcpy(result->host, authority, host_length);
+        result->host[host_length] = '\0';
+        if (!parse_port_text(colon + 1, &result->port)) {
+            return 0;
+        }
+    } else {
+        memcpy(result->host, authority, length + 1);
+        result->port = default_port;
+    }
+    return 1;
+}
+
+static int set_target(endpoint *result, const char *target) {
+    if (*target == '\0') {
+        target = "/";
+    }
+    if (strlen(target) >= sizeof(result->target)) {
+        return 0;
+    }
+    strcpy(result->target, target);
+    return 1;
+}
+
+static int parse_absolute_location(const char *location, int default_tls, endpoint *result) {
+    const char *rest = NULL;
+    int default_port = 0;
+    if (strncasecmp(location, "http://", 7) == 0) {
+        result->use_tls = 0;
+        default_port = 80;
+        rest = location + 7;
+    } else if (strncasecmp(location, "https://", 8) == 0) {
+        result->use_tls = 1;
+        default_port = 443;
+        rest = location + 8;
+    } else if (strncmp(location, "//", 2) == 0) {
+        result->use_tls = default_tls;
+        default_port = default_tls ? 443 : 80;
+        rest = location + 2;
+    } else {
+        return 0;
+    }
+
+    const char *separator = strpbrk(rest, "/?");
+    size_t authority_length = separator != NULL ? (size_t)(separator - rest) : strlen(rest);
+    if (authority_length == 0 || authority_length >= MAX_HOST_BYTES) {
+        return 0;
+    }
+    char authority[MAX_HOST_BYTES];
+    memcpy(authority, rest, authority_length);
+    authority[authority_length] = '\0';
+    if (!parse_authority(authority, default_port, result)) {
+        return 0;
+    }
+
+    if (separator == NULL) {
+        return set_target(result, "/");
+    }
+    if (*separator == '?') {
+        char target[MAX_TARGET_BYTES];
+        int written = snprintf(target, sizeof(target), "/%s", separator);
+        return written > 0 && (size_t)written < sizeof(target) && set_target(result, target);
+    }
+    return set_target(result, separator);
+}
+
+static int request_target(const char *request, char *output, size_t capacity) {
+    if (strncmp(request, "GET ", 4) != 0) {
+        return 0;
+    }
+    const char *start = request + 4;
+    const char *space = strchr(start, ' ');
+    if (space == NULL) {
+        return 0;
+    }
+    size_t length = (size_t)(space - start);
+    if (length == 0 || length >= capacity) {
+        return 0;
+    }
+    memcpy(output, start, length);
+    output[length] = '\0';
+    return 1;
+}
+
+static int resolve_location(const endpoint *current, const char *request,
+                            const char *raw_location, endpoint *result) {
+    if (!visible_url_bytes(raw_location) || strlen(raw_location) >= MAX_LOCATION_BYTES) {
+        return 0;
+    }
+    char location[MAX_LOCATION_BYTES];
+    strcpy(location, raw_location);
+    drop_fragment(location);
+    if (location[0] == '\0') {
+        return 0;
+    }
+
+    if (strncasecmp(location, "http://", 7) == 0 ||
+        strncasecmp(location, "https://", 8) == 0 ||
+        strncmp(location, "//", 2) == 0) {
+        return parse_absolute_location(location, current->use_tls, result);
+    }
+
+    *result = *current;
+    if (location[0] == '/') {
+        return set_target(result, location);
+    }
+
+    char current_target[MAX_TARGET_BYTES];
+    if (!request_target(request, current_target, sizeof(current_target))) {
+        return 0;
+    }
+    char *query = strchr(current_target, '?');
+    if (query != NULL) {
+        *query = '\0';
+    }
+
+    char combined[MAX_TARGET_BYTES];
+    if (location[0] == '?') {
+        int written = snprintf(combined, sizeof(combined), "%s%s", current_target, location);
+        return written > 0 && (size_t)written < sizeof(combined) && set_target(result, combined);
+    }
+
+    char *last_slash = strrchr(current_target, '/');
+    size_t directory_length = last_slash != NULL ? (size_t)(last_slash - current_target + 1) : 1u;
+    if (directory_length >= sizeof(combined)) {
+        return 0;
+    }
+    memcpy(combined, current_target, directory_length);
+    combined[directory_length] = '\0';
+    if (strlen(location) >= sizeof(combined) - directory_length) {
+        return 0;
+    }
+    strcat(combined, location);
+    return set_target(result, combined);
+}
+
+static int endpoint_authority(const endpoint *value, char *output, size_t capacity) {
+    int default_port = value->use_tls ? 443 : 80;
+    int written = value->port == default_port
+        ? snprintf(output, capacity, "%s", value->host)
+        : snprintf(output, capacity, "%s:%d", value->host, value->port);
+    return written > 0 && (size_t)written < capacity;
+}
+
+static char *rewrite_get_request(const char *request, const endpoint *next) {
+    const char *line_end = strstr(request, "\r\n");
+    if (line_end == NULL) {
+        return NULL;
+    }
+    const char *headers = line_end + 2;
+    size_t input_length = strlen(request);
+    size_t capacity = input_length + strlen(next->target) + strlen(next->host) + 128u;
+    char *output = malloc(capacity);
+    if (output == NULL) {
+        return NULL;
+    }
+
+    char authority[MAX_HOST_BYTES + 16];
+    if (!endpoint_authority(next, authority, sizeof(authority))) {
+        free(output);
+        return NULL;
+    }
+
+    int written = snprintf(output, capacity, "GET %s HTTP/1.0\r\n", next->target);
+    if (written < 0 || (size_t)written >= capacity) {
+        free(output);
+        return NULL;
+    }
+    size_t used = (size_t)written;
+    int replaced_host = 0;
+    const char *cursor = headers;
+    while (*cursor != '\0') {
+        const char *next_line = strstr(cursor, "\r\n");
+        if (next_line == NULL) {
+            free(output);
+            return NULL;
+        }
+        size_t line_length = (size_t)(next_line - cursor);
+        if (line_length == 0) {
+            break;
+        }
+
+        if (line_length >= 5 && strncasecmp(cursor, "Host:", 5) == 0) {
+            written = snprintf(output + used, capacity - used, "Host: %s\r\n", authority);
+            replaced_host = 1;
+            if (written < 0 || (size_t)written >= capacity - used) {
+                free(output);
+                return NULL;
+            }
+            used += (size_t)written;
+        } else {
+            if (line_length + 2 >= capacity - used) {
+                free(output);
+                return NULL;
+            }
+            memcpy(output + used, cursor, line_length);
+            used += line_length;
+            memcpy(output + used, "\r\n", 2);
+            used += 2;
+            output[used] = '\0';
+        }
+        cursor = next_line + 2;
+    }
+
+    if (!replaced_host) {
+        written = snprintf(output + used, capacity - used, "Host: %s\r\n", authority);
+        if (written < 0 || (size_t)written >= capacity - used) {
+            free(output);
+            return NULL;
+        }
+        used += (size_t)written;
+    }
+    if (used + 2 >= capacity) {
+        free(output);
+        return NULL;
+    }
+    memcpy(output + used, "\r\n", 3);
+    return output;
+}
+
 static int valid_wire_request(const char *request) {
     return strncmp(request, "GET ", 4) == 0 || strncmp(request, "POST ", 5) == 0;
+}
+
+static int one_request(const endpoint *target, const char *request,
+                       response_head *head, char *body_prefix, size_t body_capacity,
+                       size_t *body_length, connection *opened) {
+    if (!open_connection(target->host, target->port, target->use_tls, opened)) {
+        return target->use_tls ? 5 : 4;
+    }
+    if (!write_all(opened, request, strlen(request))) {
+        complain("request write failed");
+        close_connection(opened);
+        return 6;
+    }
+    if (!read_response_head(opened, head, body_prefix, body_capacity, body_length)) {
+        close_connection(opened);
+        return 7;
+    }
+    return 0;
 }
 
 static int send_request(const char *host, int port, const char *request, int use_tls) {
@@ -258,21 +662,74 @@ static int send_request(const char *host, int port, const char *request, int use
         return 2;
     }
 
-    connection connection;
-    if (!open_connection(host, port, use_tls, &connection)) {
-        return use_tls ? 5 : 4;
+    endpoint current;
+    memset(&current, 0, sizeof(current));
+    current.use_tls = use_tls;
+    current.port = port;
+    if (strlen(host) >= sizeof(current.host)) {
+        complain("host is too long");
+        return 3;
+    }
+    strcpy(current.host, host);
+    if (!request_target(request, current.target, sizeof(current.target)) && strncmp(request, "GET ", 4) == 0) {
+        complain("invalid GET request target");
+        return 3;
     }
 
-    int result = 0;
-    if (!write_all(&connection, request, strlen(request))) {
-        complain("request write failed");
-        result = 6;
-    } else if (!copy_response_body(&connection)) {
-        result = 7;
+    char *current_request = strdup(request);
+    if (current_request == NULL) {
+        complain("out of memory");
+        return 3;
     }
 
-    close_connection(&connection);
-    return result;
+    for (int redirects = 0; ; ++redirects) {
+        response_head head;
+        char body_prefix[16384];
+        size_t body_length = 0;
+        connection opened;
+        int result = one_request(&current, current_request, &head,
+                                 body_prefix, sizeof(body_prefix), &body_length, &opened);
+        if (result != 0) {
+            free(current_request);
+            return result;
+        }
+
+        int can_follow = strncmp(current_request, "GET ", 4) == 0 &&
+                         redirect_status(head.status) && head.has_location;
+        if (!can_follow) {
+            int copied = copy_remaining_body(&opened, body_prefix, body_length);
+            close_connection(&opened);
+            free(current_request);
+            return copied ? 0 : 7;
+        }
+
+        if (redirects >= MAX_REDIRECTS) {
+            close_connection(&opened);
+            free(current_request);
+            complain("too many redirects");
+            return 8;
+        }
+
+        endpoint next;
+        if (!resolve_location(&current, current_request, head.location, &next)) {
+            close_connection(&opened);
+            free(current_request);
+            complain("unsupported redirect location");
+            return 8;
+        }
+        char *next_request = rewrite_get_request(current_request, &next);
+        if (next_request == NULL) {
+            close_connection(&opened);
+            free(current_request);
+            complain("could not construct redirected GET request");
+            return 8;
+        }
+
+        close_connection(&opened);
+        free(current_request);
+        current_request = next_request;
+        current = next;
+    }
 }
 
 int icu_send_http(const char *host, int port, const char *request) {
