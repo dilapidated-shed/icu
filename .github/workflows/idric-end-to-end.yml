@@ -80,7 +80,7 @@ jobs:
                   self.wfile.write(body)
 
               def reply(self, body):
-                  self.reply_bytes(body.encode("ascii"), "text/plain")
+                  self.reply_bytes(body.encode("utf-8"), "text/plain; charset=utf-8")
 
               def redirect(self, status, location):
                   self.send_response(status)
@@ -108,7 +108,7 @@ jobs:
 
               def do_POST(self):
                   length = int(self.headers.get("Content-Length", "0"))
-                  body = self.rfile.read(length).decode("ascii")
+                  body = self.rfile.read(length).decode("utf-8")
                   self.reply("POST " + self.path + " " + body)
 
           plain = ThreadingHTTPServer(("127.0.0.1", 18080), Handler)
@@ -130,12 +130,12 @@ jobs:
           echo $! > "$RUNNER_TEMP/icu-server.pid"
           sleep 1
 
-      - name: Run compiled HTTP, HTTPS, redirect, and binary-body checks
+      - name: Run compiled HTTP, HTTPS, redirect, binary, and UTF-8 checks
         env:
           SSL_CERT_FILE: ${{ runner.temp }}/icu-tls/ca.pem
         run: |
           test "$(./build/exec/icu get http://127.0.0.1:18080/plain?x=1)" = 'GET /plain?x=1'
-          test "$(./build/exec/icu post http://127.0.0.1:18080/post hello)" = 'POST /post hello'
+          test "$(./build/exec/icu post http://127.0.0.1:18080/post café)" = 'POST /post café'
           test "$(./build/exec/icu get https://localhost:18443/secure)" = 'GET /secure'
           test "$(./build/exec/icu post https://localhost:18443/secure-post hello)" = 'POST /secure-post hello'
 
