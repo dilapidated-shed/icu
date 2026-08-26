@@ -3,9 +3,25 @@ module Http
 %default total
 
 public export
+record Port where
+  constructor MkPort
+  bits : Bits16
+
+public export
+mk_port : Integer → Maybe Port
+mk_port number =
+  if number >= 0 && number <= 65535
+    then Just (MkPort (cast number))
+    else Nothing
+
+public export
+port_number : Port → Int
+port_number (MkPort number) = cast number
+
+public export
 choice url one_of
-  http_url String Nat String
-  https_url String Nat String
+  http_url String Port String
+  https_url String Port String
 
 public export
 choice request one_of
@@ -38,7 +54,7 @@ split_port (character :: rest) =
   let (host_name, port_text) = split_port rest in
     (character :: host_name, port_text)
 
-digit_value : Char → Maybe Nat
+digit_value : Char → Maybe ℕ
 digit_value '0' = Just 0
 digit_value '1' = Just 1
 digit_value '2' = Just 2
@@ -51,23 +67,23 @@ digit_value '8' = Just 8
 digit_value '9' = Just 9
 digit_value _ = Nothing
 
-parse_digits : Nat → List Char → Maybe Nat
+parse_digits : ℕ → List Char → Maybe ℕ
 parse_digits accumulated [] = Just accumulated
 parse_digits accumulated (character :: rest) =
   case digit_value character of
     Nothing => Nothing
     Just digit => parse_digits (accumulated * 10 + digit) rest
 
-parse_port : List Char → Either String Nat
+parse_port : List Char → Either String Port
 parse_port [] = Left "port is empty"
 parse_port characters =
   case parse_digits 0 characters of
     Nothing => Left "port must contain only decimal digits"
     Just 0 => Left "port must be between 1 and 65535"
     Just number =>
-      if number <= 65535
-        then Right number
-        else Left "port must be between 1 and 65535"
+      case mk_port (cast number) of
+        Nothing => Left "port must be between 1 and 65535"
+        Just valid_port => Right valid_port
 
 drop_fragment : List Char → List Char
 drop_fragment [] = []
@@ -88,8 +104,8 @@ all_characters predicate (character :: rest) =
   predicate character && all_characters predicate rest
 
 make_url :
-  (String → Nat → String → url) →
-  Nat →
+  (String → Port → String → url) →
+  Port →
   List Char →
   Either String url
 make_url build_url default_port input =
@@ -111,16 +127,16 @@ make_url build_url default_port input =
                  Just characters =>
                    case parse_port characters of
                      Left problem => Left problem
-                     Right number => Right (build_url host_name number normalized_target)
+                     Right valid_port => Right (build_url host_name valid_port normalized_target)
 
 public export
 parse_url : String → Either String url
 parse_url text =
   case strip_prefix (unpack "http://") (unpack text) of
-    Just rest => make_url http_url 80 rest
+    Just rest => make_url http_url (MkPort 80) rest
     Nothing =>
       case strip_prefix (unpack "https://") (unpack text) of
-        Just rest => make_url https_url 443 rest
+        Just rest => make_url https_url (MkPort 443) rest
         Nothing => Left "URL must begin with http:// or https://"
 
 public export
@@ -129,7 +145,7 @@ host (http_url name _ _) = name
 host (https_url name _ _) = name
 
 public export
-port : url → Nat
+port : url → Port
 port (http_url _ number _) = number
 port (https_url _ number _) = number
 
@@ -145,9 +161,12 @@ secure (https_url _ _ _) = True
 
 public export
 authority : url → String
-authority (http_url name 80 _) = name
-authority (https_url name 443 _) = name
-authority value = host value ++ ":" ++ show (port value)
+authority value =
+  let number = port_number (port value)
+      default_port = if secure value then 443 else 80
+  in if number == default_port
+       then host value
+       else host value ++ ":" ++ show number
 
 common_headers : url → String
 common_headers target_url =

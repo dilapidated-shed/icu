@@ -21,14 +21,24 @@ Unsupported protocols and methods are absent from the request model rather than
 stored as strings and rejected much later.
 
 ```idris
+record Port where
+  constructor MkPort
+  bits : Bits16
+
 choice url one_of
-  http_url String Nat String
-  https_url String Nat String
+  http_url String Port String
+  https_url String Port String
 
 choice request one_of
   get url
   post url String
 ```
+
+`Port` is bounded by representation to the complete unsigned 16-bit range.
+`mk_port : Integer → Maybe Port` is the checked conversion from a wider integer.
+The URL parser deliberately keeps its existing destination policy of accepting
+textual ports 1 through 65535, while the type itself faithfully represents
+0 through 65535.
 
 `src/Http.idric` owns URL parsing and HTTP request rendering.
 `src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
@@ -105,7 +115,9 @@ repo-local transport library:
 ```
 
 `make check-native` compiles the native boundary with warnings promoted to
-errors.
+errors. `make check-idric-vocabulary` rejects the upstream natural-number
+spelling from active `.idric` source, tests, and this README; the default build
+runs that check before compiling ICU.
 
 ## Reference source
 
