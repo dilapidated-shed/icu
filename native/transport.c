@@ -638,13 +638,16 @@ static int valid_wire_request(const char *request) {
     return strncmp(request, "GET ", 4) == 0 || strncmp(request, "POST ", 5) == 0;
 }
 
-static int one_request(const endpoint *target, const char *request,
+static int one_request(const endpoint *target, const char *request_headers,
+                       const char *request_body, size_t request_body_length,
                        response_head *head, char *body_prefix, size_t body_capacity,
                        size_t *body_length, connection *opened) {
     if (!open_connection(target->host, target->port, target->use_tls, opened)) {
         return target->use_tls ? 5 : 4;
     }
-    if (!write_all(opened, request, strlen(request))) {
+    if (!write_all(opened, request_headers, strlen(request_headers)) ||
+        (request_body_length != 0 &&
+         !write_all(opened, request_body, request_body_length))) {
         complain("request write failed");
         close_connection(opened);
         return 6;
@@ -656,9 +659,20 @@ static int one_request(const endpoint *target, const char *request,
     return 0;
 }
 
-static int send_request(const char *host, int port, const char *request, int use_tls) {
-    if (!valid_wire_request(request)) {
+static int send_request(const char *host, int port, const char *request_headers,
+                        const char *request_body, int request_body_length, int use_tls) {
+    if (request_body_length < 0 || (request_body_length != 0 && request_body == NULL)) {
+        complain("invalid request body length");
+        return 2;
+    }
+    if (!valid_wire_request(request_headers)) {
         complain("transport accepts only GET and POST requests");
+        return 2;
+    }
+
+    int is_get = strncmp(request_headers, "GET ", 4) == 0;
+    if (is_get && request_body_length != 0) {
+        complain("GET request body must be empty");
         return 2;
     }
 
@@ -671,24 +685,26 @@ static int send_request(const char *host, int port, const char *request, int use
         return 3;
     }
     strcpy(current.host, host);
-    if (!request_target(request, current.target, sizeof(current.target)) && strncmp(request, "GET ", 4) == 0) {
+    if (!request_target(request_headers, current.target, sizeof(current.target)) && is_get) {
         complain("invalid GET request target");
         return 3;
     }
 
-    char *current_request = strdup(request);
+    char *current_request = strdup(request_headers);
     if (current_request == NULL) {
         complain("out of memory");
         return 3;
     }
 
+    size_t request_bytes = (size_t)request_body_length;
     for (int redirects = 0; ; ++redirects) {
         response_head head;
         char body_prefix[16384];
-        size_t body_length = 0;
+        size_t response_body_length = 0;
         connection opened;
-        int result = one_request(&current, current_request, &head,
-                                 body_prefix, sizeof(body_prefix), &body_length, &opened);
+        int result = one_request(&current, current_request, request_body, request_bytes,
+                                 &head, body_prefix, sizeof(body_prefix),
+                                 &response_body_length, &opened);
         if (result != 0) {
             free(current_request);
             return result;
@@ -697,7 +713,7 @@ static int send_request(const char *host, int port, const char *request, int use
         int can_follow = strncmp(current_request, "GET ", 4) == 0 &&
                          redirect_status(head.status) && head.has_location;
         if (!can_follow) {
-            int copied = copy_remaining_body(&opened, body_prefix, body_length);
+            int copied = copy_remaining_body(&opened, body_prefix, response_body_length);
             close_connection(&opened);
             free(current_request);
             return copied ? 0 : 7;
@@ -732,10 +748,12 @@ static int send_request(const char *host, int port, const char *request, int use
     }
 }
 
-int icu_send_http(const char *host, int port, const char *request) {
-    return send_request(host, port, request, 0);
+int icu_send_http(const char *host, int port, const char *request_headers,
+                  const char *request_body, int request_body_length) {
+    return send_request(host, port, request_headers, request_body, request_body_length, 0);
 }
 
-int icu_send_https(const char *host, int port, const char *request) {
-    return send_request(host, port, request, 1);
+int icu_send_https(const char *host, int port, const char *request_headers,
+                   const char *request_body, int request_body_length) {
+    return send_request(host, port, request_headers, request_body, request_body_length, 1);
 }
