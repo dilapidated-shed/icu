@@ -49,10 +49,12 @@ icu post https://example.com/message hello
 
 The transport uses HTTP/1.0 plus `Connection: close`. Requests advertise
 `Accept-Encoding: identity`, so HTML and image bodies can be consumed directly
-without first adding gzip/brotli decoding. Response headers are bounded to
-64 KiB. The status line and `Location` are parsed before the final response body
-is streamed byte-for-byte to stdout; other response headers remain internal for
-now.
+without first adding gzip/brotli decoding. POST text is encoded as UTF-8:
+Idriç computes `Content-Length` from the encoded byte count, then the native
+transport writes request headers and body separately using that explicit body
+length. Response headers are bounded to 64 KiB. The status line and `Location`
+are parsed before the final response body is streamed byte-for-byte to stdout;
+other response headers remain internal for now.
 
 ### Redirects
 
@@ -86,7 +88,6 @@ Current intentional limits:
 - no FTP, SMTP, file URLs, or other curl protocols
 - URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
 - URL userinfo and IPv6 literals are not supported yet
-- POST bodies are ASCII-only until the Edriç boundary carries explicit UTF-8 bytes
 
 ## Build
 

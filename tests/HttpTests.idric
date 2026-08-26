@@ -55,14 +55,31 @@ render_get =
            "User-Agent: icu/0.1\r\n" ++
            "\r\n")
 
-reject_non_ascii_post : Bool
-reject_non_ascii_post =
+utf8_lengths : Bool
+utf8_lengths =
+  utf8_byte_length "" == 0 &&
+  utf8_byte_length "ASCII" == 5 &&
+  utf8_byte_length "café" == 5 &&
+  utf8_byte_length "Aé€🙂" == 10
+
+render_utf8_post : Bool
+render_utf8_post =
   case parse_url "https://example.com/message" of
     Left _ => False
     Right target_url =>
-      case render_request (post target_url "café") of
-        Left _ => True
-        Right _ => False
+      case render_request_parts (post target_url "café") of
+        (wire_headers, body, body_length) =>
+          wire_headers ==
+            ("POST /message HTTP/1.0\r\n" ++
+             "Host: example.com\r\n" ++
+             "Connection: close\r\n" ++
+             "Accept-Encoding: identity\r\n" ++
+             "User-Agent: icu/0.1\r\n" ++
+             "Content-Type: text/plain; charset=utf-8\r\n" ++
+             "Content-Length: 5\r\n" ++
+             "\r\n") &&
+          body == "café" &&
+          body_length == 5
 
 all_pass : Bool
 all_pass =
@@ -72,7 +89,8 @@ all_pass =
   reject_userinfo &&
   reject_header_injection &&
   render_get &&
-  reject_non_ascii_post
+  utf8_lengths &&
+  render_utf8_post
 
 main : IO ()
 main = do
@@ -82,5 +100,6 @@ main = do
   check "reject URL userinfo" reject_userinfo
   check "reject header injection" reject_header_injection
   check "GET wire form requests identity encoding" render_get
-  check "POST byte-length boundary" reject_non_ascii_post
+  check "UTF-8 byte lengths" utf8_lengths
+  check "POST carries UTF-8 body with byte Content-Length" render_utf8_post
   if all_pass then pure () else exitFailure
