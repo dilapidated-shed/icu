@@ -45,6 +45,13 @@ jobs:
           "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
           ./build/exec/icu-http-tests
 
+      - name: Compare C and Idric transport models
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          make check-transport-model \
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+
       - name: Start deterministic HTTP and HTTPS servers
         run: |
           mkdir -p "$RUNNER_TEMP/icu-tls"

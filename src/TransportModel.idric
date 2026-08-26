@@ -1,0 +1,380 @@
+module TransportModel
+
+%default total
+
+public export
+choice transport_endpoint one_of
+  endpoint Bool Int String String
+
+public export
+endpoint_tls : transport_endpoint → Bool
+endpoint_tls (endpoint use_tls _ _ _) = use_tls
+
+public export
+endpoint_port : transport_endpoint → Int
+endpoint_port (endpoint _ port_number _ _) = port_number
+
+public export
+endpoint_host : transport_endpoint → String
+endpoint_host (endpoint _ _ host_name _) = host_name
+
+public export
+endpoint_target : transport_endpoint → String
+endpoint_target (endpoint _ _ _ request_target) = request_target
+
+ascii_lower : Char → Char
+ascii_lower 'A' = 'a'
+ascii_lower 'B' = 'b'
+ascii_lower 'C' = 'c'
+ascii_lower 'D' = 'd'
+ascii_lower 'E' = 'e'
+ascii_lower 'F' = 'f'
+ascii_lower 'G' = 'g'
+ascii_lower 'H' = 'h'
+ascii_lower 'I' = 'i'
+ascii_lower 'J' = 'j'
+ascii_lower 'K' = 'k'
+ascii_lower 'L' = 'l'
+ascii_lower 'M' = 'm'
+ascii_lower 'N' = 'n'
+ascii_lower 'O' = 'o'
+ascii_lower 'P' = 'p'
+ascii_lower 'Q' = 'q'
+ascii_lower 'R' = 'r'
+ascii_lower 'S' = 's'
+ascii_lower 'T' = 't'
+ascii_lower 'U' = 'u'
+ascii_lower 'V' = 'v'
+ascii_lower 'W' = 'w'
+ascii_lower 'X' = 'x'
+ascii_lower 'Y' = 'y'
+ascii_lower 'Z' = 'z'
+ascii_lower character = character
+
+ascii_equal : List Char → List Char → Bool
+ascii_equal [] [] = True
+ascii_equal [] _ = False
+ascii_equal _ [] = False
+ascii_equal (left :: remaining_left) (right :: remaining_right) =
+  ascii_lower left == ascii_lower right &&
+  ascii_equal remaining_left remaining_right
+
+strip_prefix : List Char → List Char → Maybe (List Char)
+strip_prefix [] input = Just input
+strip_prefix _ [] = Nothing
+strip_prefix (expected :: remaining_prefix) (actual :: input) =
+  if expected == actual
+    then strip_prefix remaining_prefix input
+    else Nothing
+
+strip_prefix_ascii : List Char → List Char → Maybe (List Char)
+strip_prefix_ascii [] input = Just input
+strip_prefix_ascii _ [] = Nothing
+strip_prefix_ascii (expected :: remaining_prefix) (actual :: input) =
+  if ascii_lower expected == ascii_lower actual
+    then strip_prefix_ascii remaining_prefix input
+    else Nothing
+
+take_line : List Char → (List Char, List Char)
+take_line [] = ([], [])
+take_line ('\n' :: rest) = ([], rest)
+take_line (character :: rest) =
+  let (line, remaining) = take_line rest in
+    (character :: line, remaining)
+
+drop_final_cr : List Char → List Char
+drop_final_cr characters =
+  case reverse characters of
+    '\r' :: rest => reverse rest
+    _ => characters
+
+drop_horizontal_space : List Char → List Char
+drop_horizontal_space (' ' :: rest) = drop_horizontal_space rest
+drop_horizontal_space ('\t' :: rest) = drop_horizontal_space rest
+drop_horizontal_space characters = characters
+
+trim_horizontal_space : List Char → List Char
+trim_horizontal_space characters =
+  reverse (drop_horizontal_space (reverse (drop_horizontal_space characters)))
+
+split_first : Char → List Char → Maybe (List Char, List Char)
+split_first _ [] = Nothing
+split_first wanted (character :: rest) =
+  if character == wanted
+    then Just ([], rest)
+    else case split_first wanted rest of
+      Nothing => Nothing
+      Just (before, after) => Just (character :: before, after)
+
+split_last : Char → List Char → Maybe (List Char, List Char)
+split_last wanted characters =
+  case split_first wanted (reverse characters) of
+    Nothing => Nothing
+    Just (after_reversed, before_reversed) =>
+      Just (reverse before_reversed, reverse after_reversed)
+
+digit_value : Char → Maybe Int
+digit_value '0' = Just 0
+digit_value '1' = Just 1
+digit_value '2' = Just 2
+digit_value '3' = Just 3
+digit_value '4' = Just 4
+digit_value '5' = Just 5
+digit_value '6' = Just 6
+digit_value '7' = Just 7
+digit_value '8' = Just 8
+digit_value '9' = Just 9
+digit_value _ = Nothing
+
+public export
+parse_status : String → Maybe Int
+parse_status headers =
+  let (first_line, _) = take_line (unpack headers) in
+    case split_first ' ' first_line of
+      Just (_, first :: second :: third :: _) =>
+        case (digit_value first, digit_value second, digit_value third) of
+          (Just hundreds, Just tens, Just ones) =>
+            Just (hundreds * 100 + tens * 10 + ones)
+          _ => Nothing
+      _ => Nothing
+
+find_header : List Char → List Char → Maybe String
+find_header _ [] = Nothing
+find_header wanted input =
+  let (raw_line, remaining) = take_line input
+      line = drop_final_cr raw_line
+  in case line of
+    [] => Nothing
+    _ =>
+      case split_first ':' line of
+        Just (name, raw_value) =>
+          let value = trim_horizontal_space raw_value in
+            if ascii_equal wanted name
+              then if value /= [] && length value < 4096
+                then Just (pack value)
+                else Nothing
+              else find_header wanted (assert_smaller input remaining)
+        Nothing => find_header wanted (assert_smaller input remaining)
+
+public export
+header_value : String → String → Maybe String
+header_value headers wanted =
+  let (_, after_status) = take_line (unpack headers) in
+    find_header (unpack wanted) after_status
+
+public export
+redirect_status : Int → Bool
+redirect_status status =
+  status == 301 || status == 302 || status == 303 ||
+  status == 307 || status == 308
+
+visible_url_characters : List Char → Bool
+visible_url_characters [] = True
+visible_url_characters (character :: rest) =
+  ord character > 32 && ord character < 127 && visible_url_characters rest
+
+public export
+visible_url : String → Bool
+visible_url = visible_url_characters . unpack
+
+drop_fragment_characters : List Char → List Char
+drop_fragment_characters [] = []
+drop_fragment_characters ('#' :: _) = []
+drop_fragment_characters (character :: rest) =
+  character :: drop_fragment_characters rest
+
+parse_port_characters : Int → List Char → Maybe Int
+parse_port_characters accumulated [] =
+  if accumulated >= 1 && accumulated <= 65535
+    then Just accumulated
+    else Nothing
+parse_port_characters accumulated (character :: rest) =
+  case digit_value character of
+    Nothing => Nothing
+    Just digit =>
+      let next = accumulated * 10 + digit in
+        if next > 65535
+          then Nothing
+          else parse_port_characters next rest
+
+parse_port : List Char → Maybe Int
+parse_port [] = Nothing
+parse_port characters = parse_port_characters 0 characters
+
+contains : Char → List Char → Bool
+contains _ [] = False
+contains wanted (character :: rest) =
+  character == wanted || contains wanted rest
+
+parse_authority : List Char → Int → Bool → String → Maybe transport_endpoint
+parse_authority authority default_port use_tls target =
+  if authority == [] || length authority >= 1024 ||
+     contains '@' authority || contains ']' authority
+    then Nothing
+    else case authority of
+      '[' :: _ => Nothing
+      _ =>
+        case split_last ':' authority of
+          Nothing => Just (endpoint use_tls default_port (pack authority) target)
+          Just ([], _) => Nothing
+          Just (host_name, port_text) =>
+            case parse_port port_text of
+              Nothing => Nothing
+              Just port_number =>
+                Just (endpoint use_tls port_number (pack host_name) target)
+
+set_target : transport_endpoint → List Char → Maybe transport_endpoint
+set_target (endpoint use_tls port_number host_name _) [] =
+  Just (endpoint use_tls port_number host_name "/")
+set_target (endpoint use_tls port_number host_name _) target =
+  if length target >= 16384
+    then Nothing
+    else Just (endpoint use_tls port_number host_name (pack target))
+
+split_authority : List Char → (List Char, List Char)
+split_authority [] = ([], [])
+split_authority input@(character :: rest) =
+  if character == '/' || character == '?'
+    then ([], input)
+    else let (authority, target) = split_authority rest in
+      (character :: authority, target)
+
+parse_absolute_rest : Bool → Int → List Char → Maybe transport_endpoint
+parse_absolute_rest use_tls default_port input =
+  let (authority, separator) = split_authority input in
+    if authority == [] || length authority >= 1024
+      then Nothing
+      else case parse_authority authority default_port use_tls "/" of
+        Nothing => Nothing
+        Just parsed =>
+          case separator of
+            [] => Just parsed
+            '?' :: _ => set_target parsed ('/' :: separator)
+            _ => set_target parsed separator
+
+parse_absolute_location : List Char → Bool → Maybe transport_endpoint
+parse_absolute_location location default_tls =
+  case strip_prefix_ascii (unpack "http://") location of
+    Just rest => parse_absolute_rest False 80 rest
+    Nothing =>
+      case strip_prefix_ascii (unpack "https://") location of
+        Just rest => parse_absolute_rest True 443 rest
+        Nothing =>
+          case strip_prefix (unpack "//") location of
+            Just rest =>
+              parse_absolute_rest default_tls (if default_tls then 443 else 80) rest
+            Nothing => Nothing
+
+public export
+request_target : String → Maybe String
+request_target request =
+  case strip_prefix (unpack "GET ") (unpack request) of
+    Nothing => Nothing
+    Just rest =>
+      case split_first ' ' rest of
+        Just ([], _) => Nothing
+        Just (target, _) =>
+          if length target >= 16384 then Nothing else Just (pack target)
+        Nothing => Nothing
+
+remove_query : List Char → List Char
+remove_query [] = []
+remove_query ('?' :: _) = []
+remove_query (character :: rest) = character :: remove_query rest
+
+directory_prefix : List Char → List Char
+directory_prefix target =
+  case split_last '/' target of
+    Just (directory, _) => directory ++ ['/']
+    Nothing => case target of
+      [] => []
+      first :: _ => [first]
+
+starts_absolute : List Char → Bool
+starts_absolute location =
+  case strip_prefix_ascii (unpack "http://") location of
+    Just _ => True
+    Nothing => case strip_prefix_ascii (unpack "https://") location of
+      Just _ => True
+      Nothing => case strip_prefix (unpack "//") location of
+        Just _ => True
+        Nothing => False
+
+public export
+resolve_location :
+  transport_endpoint → String → String → Maybe transport_endpoint
+resolve_location current request raw_location =
+  if not (visible_url raw_location) || length (unpack raw_location) >= 4096
+    then Nothing
+    else
+      let location = drop_fragment_characters (unpack raw_location) in
+        case location of
+          [] => Nothing
+          _ =>
+            if starts_absolute location
+              then parse_absolute_location location (endpoint_tls current)
+              else case location of
+                '/' :: _ => set_target current location
+                _ =>
+                  case request_target request of
+                    Nothing => Nothing
+                    Just raw_target =>
+                      let current_target = remove_query (unpack raw_target) in
+                        case location of
+                          '?' :: _ => set_target current (current_target ++ location)
+                          _ => set_target current (directory_prefix current_target ++ location)
+
+public export
+endpoint_authority : transport_endpoint → String
+endpoint_authority value =
+  let default_port = if endpoint_tls value then 443 else 80 in
+    if endpoint_port value == default_port
+      then endpoint_host value
+      else endpoint_host value ++ ":" ++ show (endpoint_port value)
+
+split_crlf : List Char → Maybe (List Char, List Char)
+split_crlf [] = Nothing
+split_crlf ('\r' :: '\n' :: rest) = Just ([], rest)
+split_crlf (character :: rest) =
+  case split_crlf rest of
+    Nothing => Nothing
+    Just (line, remaining) => Just (character :: line, remaining)
+
+rewrite_headers :
+  List Char → List Char → (List Char, Bool) → Maybe (List Char, Bool)
+rewrite_headers authority input (output, replaced_host) =
+  case split_crlf input of
+    Nothing => Nothing
+    Just ([], _) => Just (output, replaced_host)
+    Just (line, remaining) =>
+      let replacement = unpack ("Host: " ++ pack authority ++ "\r\n") in
+        case strip_prefix_ascii (unpack "Host:") line of
+          Just _ =>
+            rewrite_headers authority (assert_smaller input remaining)
+              (output ++ replacement, True)
+          Nothing =>
+            rewrite_headers authority (assert_smaller input remaining)
+              (output ++ line ++ ['\r', '\n'], replaced_host)
+
+public export
+rewrite_get_request : String → transport_endpoint → Maybe String
+rewrite_get_request request next =
+  case split_crlf (unpack request) of
+    Nothing => Nothing
+    Just (_, headers) =>
+      let authority = unpack (endpoint_authority next)
+          first_line = unpack ("GET " ++ endpoint_target next ++ " HTTP/1.0\r\n")
+      in case rewrite_headers authority headers (first_line, False) of
+        Nothing => Nothing
+        Just (rewritten, True) => Just (pack (rewritten ++ ['\r', '\n']))
+        Just (rewritten, False) =>
+          Just (pack (rewritten ++ unpack "Host: " ++ authority ++ ['\r', '\n', '\r', '\n']))
+
+public export
+valid_wire_request : String → Bool
+valid_wire_request request =
+  case strip_prefix (unpack "GET ") (unpack request) of
+    Just _ => True
+    Nothing => case strip_prefix (unpack "POST ") (unpack request) of
+      Just _ => True
+      Nothing => False

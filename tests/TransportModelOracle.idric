@@ -1,0 +1,75 @@
+module Main
+
+import System
+import TransportModel
+
+parse_integer_characters : Int → List Char → Maybe Int
+parse_integer_characters accumulated [] = Just accumulated
+parse_integer_characters accumulated (character :: rest) =
+  if ord character >= ord '0' && ord character <= ord '9'
+    then parse_integer_characters (accumulated * 10 + ord character - ord '0') rest
+    else Nothing
+
+parse_integer : String → Maybe Int
+parse_integer "" = Nothing
+parse_integer text = parse_integer_characters 0 (unpack text)
+
+show_bool : Bool → String
+show_bool True = "true"
+show_bool False = "false"
+
+show_optional_integer : Maybe Int → String
+show_optional_integer Nothing = "invalid"
+show_optional_integer (Just value) = show value
+
+show_optional_string : Maybe String → String
+show_optional_string Nothing = "invalid"
+show_optional_string (Just value) = value
+
+show_endpoint : Maybe transport_endpoint → String
+show_endpoint Nothing = "invalid"
+show_endpoint (Just value) =
+  (if endpoint_tls value then "https" else "http") ++ "|" ++
+  endpoint_host value ++ "|" ++ show (endpoint_port value) ++ "|" ++
+  endpoint_target value
+
+parse_endpoint : String → String → String → String → Maybe transport_endpoint
+parse_endpoint scheme host_name port_text target =
+  case parse_integer port_text of
+    Nothing => Nothing
+    Just port_number =>
+      if scheme == "https"
+        then Just (endpoint True port_number host_name target)
+        else if scheme == "http"
+          then Just (endpoint False port_number host_name target)
+          else Nothing
+
+run : List String → String
+run ["parse-status", headers] = show_optional_integer (parse_status headers)
+run ["header", headers, wanted] =
+  case header_value headers wanted of
+    Nothing => "missing"
+    Just value => value
+run ["redirect-status", status_text] =
+  case parse_integer status_text of
+    Nothing => "invalid"
+    Just status => show_bool (redirect_status status)
+run ["visible-url", text] = show_bool (visible_url text)
+run ["valid-request", request] = show_bool (valid_wire_request request)
+run ["request-target", request] = show_optional_string (request_target request)
+run ["resolve", scheme, host_name, port_text, target, request, location] =
+  case parse_endpoint scheme host_name port_text target of
+    Nothing => "invalid"
+    Just current => show_endpoint (resolve_location current request location)
+run ["rewrite", scheme, host_name, port_text, target, request] =
+  case parse_endpoint scheme host_name port_text target of
+    Nothing => "invalid"
+    Just next => show_optional_string (rewrite_get_request request next)
+run _ = "invalid invocation"
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest => putStr (run rest)
+    [] => putStr "invalid invocation"
