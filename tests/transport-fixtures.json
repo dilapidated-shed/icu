@@ -1,0 +1,142 @@
+[
+  {
+    "name": "status with reason",
+    "operation": "parse-status",
+    "arguments": ["HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n"]
+  },
+  {
+    "name": "status without reason",
+    "operation": "parse-status",
+    "arguments": ["HTTP/1.1 308\r\n\r\n"]
+  },
+  {
+    "name": "invalid short status",
+    "operation": "parse-status",
+    "arguments": ["HTTP/1.0 20\r\n\r\n"]
+  },
+  {
+    "name": "invalid nondecimal status",
+    "operation": "parse-status",
+    "arguments": ["HTTP/1.0 2O0 no\r\n\r\n"]
+  },
+  {
+    "name": "location is case insensitive and trimmed",
+    "operation": "header",
+    "arguments": ["HTTP/1.0 302 Found\r\nContent-Length: 0\r\nlOcAtIoN:\t /next?q=1 \t\r\n\r\n", "Location"]
+  },
+  {
+    "name": "empty location is absent",
+    "operation": "header",
+    "arguments": ["HTTP/1.0 302 Found\r\nLocation: \t\r\n\r\n", "Location"]
+  },
+  {
+    "name": "invalid first matching location is final",
+    "operation": "header",
+    "arguments": ["HTTP/1.0 302 Found\r\nLocation: \t\r\nLocation: /second\r\n\r\n", "Location"]
+  },
+  {
+    "name": "header scan stops at body",
+    "operation": "header",
+    "arguments": ["HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nLocation: /not-a-header\r\n", "Location"]
+  },
+  {
+    "name": "301 redirects",
+    "operation": "redirect-status",
+    "arguments": ["301"]
+  },
+  {
+    "name": "306 does not redirect",
+    "operation": "redirect-status",
+    "arguments": ["306"]
+  },
+  {
+    "name": "visible ASCII URL",
+    "operation": "visible-url",
+    "arguments": ["/books?q=logic#page-2"]
+  },
+  {
+    "name": "space is not a wire URL byte",
+    "operation": "visible-url",
+    "arguments": ["/two words"]
+  },
+  {
+    "name": "Unicode is not a wire URL byte",
+    "operation": "visible-url",
+    "arguments": ["/café"]
+  },
+  {
+    "name": "GET wire request accepted",
+    "operation": "valid-request",
+    "arguments": ["GET / HTTP/1.0\r\n\r\n"]
+  },
+  {
+    "name": "method matching remains case sensitive",
+    "operation": "valid-request",
+    "arguments": ["get / HTTP/1.0\r\n\r\n"]
+  },
+  {
+    "name": "extract request target",
+    "operation": "request-target",
+    "arguments": ["GET /a/b?q=1 HTTP/1.0\r\nHost: example.com\r\n\r\n"]
+  },
+  {
+    "name": "reject empty request target",
+    "operation": "request-target",
+    "arguments": ["GET  HTTP/1.0\r\n\r\n"]
+  },
+  {
+    "name": "absolute HTTPS redirect",
+    "operation": "resolve",
+    "arguments": ["http", "old.example", "80", "/a/start", "GET /a/start HTTP/1.0\r\nHost: old.example\r\n\r\n", "https://new.example:444/final?q=1#ignored"]
+  },
+  {
+    "name": "absolute scheme matching is case insensitive",
+    "operation": "resolve",
+    "arguments": ["http", "old.example", "80", "/", "GET / HTTP/1.0\r\nHost: old.example\r\n\r\n", "HTTPS://new.example?only=query"]
+  },
+  {
+    "name": "scheme-relative redirect keeps TLS",
+    "operation": "resolve",
+    "arguments": ["https", "old.example", "443", "/a/start", "GET /a/start HTTP/1.0\r\nHost: old.example\r\n\r\n", "//new.example/final"]
+  },
+  {
+    "name": "root-relative redirect",
+    "operation": "resolve",
+    "arguments": ["http", "example.com", "8080", "/a/start", "GET /a/start HTTP/1.0\r\nHost: example.com:8080\r\n\r\n", "/root/final#fragment"]
+  },
+  {
+    "name": "ordinary relative redirect",
+    "operation": "resolve",
+    "arguments": ["http", "example.com", "80", "/a/start?old=1", "GET /a/start?old=1 HTTP/1.0\r\nHost: example.com\r\n\r\n", "next?q=2"]
+  },
+  {
+    "name": "query-only redirect",
+    "operation": "resolve",
+    "arguments": ["http", "example.com", "80", "/a/start?old=1", "GET /a/start?old=1 HTTP/1.0\r\nHost: example.com\r\n\r\n", "?new=2"]
+  },
+  {
+    "name": "reject redirect userinfo",
+    "operation": "resolve",
+    "arguments": ["http", "example.com", "80", "/", "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n", "https://name@other.example/"]
+  },
+  {
+    "name": "reject redirect bad port",
+    "operation": "resolve",
+    "arguments": ["http", "example.com", "80", "/", "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n", "https://other.example:65536/"]
+  },
+  {
+    "name": "rewrite target and existing Host",
+    "operation": "rewrite",
+    "arguments": ["https", "new.example", "443", "/next?q=1", "GET /old HTTP/1.0\r\nHost: old.example\r\nX-Test: keep\r\n\r\n"]
+  },
+  {
+    "name": "rewrite adds missing nondefault Host",
+    "operation": "rewrite",
+    "arguments": ["http", "new.example", "8080", "/next", "GET /old HTTP/1.0\r\nX-Test: keep\r\n\r\n"]
+  },
+  {
+    "name": "rewrite rejects malformed header framing",
+    "operation": "rewrite",
+    "arguments": ["http", "new.example", "80", "/next", "GET /old HTTP/1.0\nHost: old.example\n\n"]
+  }
+]

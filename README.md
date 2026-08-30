@@ -34,6 +34,11 @@ choice request one_of
 `src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
 `native/transport.c` owns sockets, OpenSSL, response framing, and the small
 amount of response-header handling needed to keep GET useful on the web.
+`src/TransportModel.idric` is the side-by-side Idriç translation of the pure
+parts of that native transport: status and header parsing, redirect
+classification and resolution, request-target validation, and redirected GET
+rewriting. The live transport still uses the C copies while their equivalence
+boundary is established.
 `src/Main.idric` owns the tiny command-line grammar.
 
 The C boundary independently refuses wire requests that do not begin with GET
@@ -127,6 +132,14 @@ repo-local transport library:
 
 `make check-native` compiles the native boundary with warnings promoted to
 errors.
+
+`make check-transport-model` runs every case in
+`tests/transport-fixtures.json` through a C oracle built directly from
+`native/transport.c` and through the Idriç model, then compares exit status,
+stdout, and stderr byte-for-byte. Fixtures cover valid and malformed status
+lines, case-insensitive and empty redirect headers, redirect status codes,
+visible-ASCII validation, request targets, five supported redirect forms,
+rejected authorities and ports, and Host-header rewriting.
 
 ## Reference source
 
