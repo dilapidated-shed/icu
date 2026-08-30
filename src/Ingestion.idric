@@ -1,0 +1,161 @@
+module Ingestion
+
+%default total
+
+public export
+choice document_event one_of
+  open_tag String
+  close_tag String
+  text_event String
+
+public export
+choice document_log one_of
+  document String (List document_event)
+
+choice html_token one_of
+  html_text String
+  html_tag String
+
+space_character : Char → Bool
+space_character value =
+  value == ' ' || value == '\n' || value == '\r' || value == '\t'
+
+drop_space : List Char → List Char
+drop_space [] = []
+drop_space (value :: rest) =
+  if space_character value then drop_space rest else value :: rest
+
+collapse_space : Bool → List Char → List Char
+collapse_space previous_space [] = []
+collapse_space previous_space (value :: rest) =
+  if space_character value
+    then if previous_space
+      then collapse_space True rest
+      else ' ' :: collapse_space True rest
+    else value :: collapse_space False rest
+
+public export
+clean_text : String → String
+clean_text text =
+  let collapsed = collapse_space False (unpack text) in
+  let left_trimmed = drop_space collapsed in
+  pack (reverse (drop_space (reverse left_trimmed)))
+
+finish_text : List Char → List html_token → List html_token
+finish_text chars tokens =
+  let text = pack (reverse chars) in
+  if text == "" then tokens else html_text text :: tokens
+
+finish_tag : List Char → List html_token → List html_token
+finish_tag chars tokens = html_tag (pack (reverse chars)) :: tokens
+
+tokenize_chars : Bool → List Char → List Char → List html_token → List html_token
+tokenize_chars in_tag current [] tokens =
+  reverse (if in_tag then finish_tag current tokens else finish_text current tokens)
+tokenize_chars False current ('<' :: rest) tokens =
+  tokenize_chars True [] rest (finish_text current tokens)
+tokenize_chars False current (value :: rest) tokens =
+  tokenize_chars False (value :: current) rest tokens
+tokenize_chars True current ('>' :: rest) tokens =
+  tokenize_chars False [] rest (finish_tag current tokens)
+tokenize_chars True current (value :: rest) tokens =
+  tokenize_chars True (value :: current) rest tokens
+
+tokenize : String → List html_token
+tokenize text = tokenize_chars False [] (unpack text) []
+
+lower_ascii : Char → Char
+lower_ascii value =
+  if value >= 'A' && value <= 'Z'
+    then chr (ord value + 32)
+    else value
+
+name_chars : List Char → List Char
+name_chars [] = []
+name_chars (value :: rest) =
+  if space_character value || value == '/' then [] else lower_ascii value :: name_chars rest
+
+closing_tag : String → Bool
+closing_tag tag =
+  case drop_space (unpack tag) of
+    '/' :: _ ⇒ True
+    _ ⇒ False
+
+tag_name : String → String
+tag_name tag =
+  case drop_space (unpack tag) of
+    '/' :: rest ⇒ pack (name_chars (drop_space rest))
+    rest ⇒ pack (name_chars rest)
+
+append_title : String → List Char → List Char
+append_title value chars = reverse (unpack value) ++ (' ' :: chars)
+
+collect : List html_token → Bool → List Char → List document_event → document_log
+collect [] capturing_title title events =
+  document (clean_text (pack (reverse title))) (reverse events)
+collect (html_text value :: rest) capturing_title title events =
+  let cleaned = clean_text value in
+  let next_events = if cleaned == "" then events else text_event cleaned :: events in
+  let next_title = if capturing_title then append_title value title else title in
+  collect rest capturing_title next_title next_events
+collect (html_tag value :: rest) capturing_title title events =
+  let name = tag_name value in
+  let closing = closing_tag value in
+  let next_capture =
+        if name == "title" then not closing else capturing_title in
+  let event = if closing then close_tag name else open_tag name in
+  collect rest next_capture title (event :: events)
+
+public export
+build_document_log : String → document_log
+build_document_log html = collect (tokenize html) False [] []
+
+public export
+document_title : document_log → String
+document_title (document title _) = title
+
+public export
+document_event_count : document_log → Nat
+document_event_count (document _ events) = length events
+
+key_character : Char → Char
+key_character value = if space_character value then '_' else value
+
+public export
+receipt_key : String → String
+receipt_key value = pack (map key_character (unpack value))
+
+starts_with_chars : List Char → List Char → Bool
+starts_with_chars [] values = True
+starts_with_chars (_ :: _) [] = False
+starts_with_chars (wanted :: wanted_rest) (value :: rest) =
+  wanted == value && starts_with_chars wanted_rest rest
+
+contains_chars : List Char → List Char → Bool
+contains_chars wanted [] = wanted == []
+contains_chars wanted values@(_ :: rest) =
+  starts_with_chars wanted values || contains_chars wanted rest
+
+public export
+contains_text : String → String → Bool
+contains_text wanted value = contains_chars (unpack wanted) (unpack value)
+
+split_tab_chars : List Char → (List Char, List Char)
+split_tab_chars [] = ([], [])
+split_tab_chars ('\t' :: rest) = ([], rest)
+split_tab_chars (value :: rest) =
+  let (left, right) = split_tab_chars rest in
+  (value :: left, right)
+
+line_value : String → String → Maybe String
+line_value wanted line =
+  let (left, right) = split_tab_chars (unpack line) in
+  if pack left == wanted then Just (pack right) else Nothing
+
+public export
+metadata_value : String → List String → Maybe String
+metadata_value wanted [] = Nothing
+metadata_value wanted (line :: rest) =
+  case line_value wanted line of
+    Just value ⇒ Just value
+    Nothing ⇒ metadata_value wanted rest

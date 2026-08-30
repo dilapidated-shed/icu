@@ -1,0 +1,156 @@
+module Main
+
+import Http
+import Ingestion
+import Data.String
+import System
+import System.File
+import Transport
+
+emit_meta : String → String → IO ()
+emit_meta key value = putStrLn ("meta\t" ++ key ++ "\t" ++ value)
+
+emit_stage : String → String → String → String → String → String → IO ()
+emit_stage fixture stage status code owner evidence =
+  putStrLn
+    ("stage\t" ++ fixture ++ "\t" ++ stage ++ "\t" ++ status ++ "\t" ++
+     code ++ "\t" ++ owner ++ "\t" ++ evidence)
+
+emit_summary : String → String → IO ()
+emit_summary first_failure first_incomplete = do
+  putStrLn ("summary\tfirst_failure\t" ++ first_failure)
+  putStrLn ("summary\tfirst_incomplete\t" ++ first_incomplete)
+
+blocked_after_network : String → IO ()
+blocked_after_network fixture = do
+  emit_stage fixture "decompression" "SKIP" "blocked_by_network" "idric" "not-run"
+  emit_stage fixture "decoding" "SKIP" "blocked_by_network" "idric" "not-run"
+  emit_stage fixture "html_recovery" "SKIP" "blocked_by_network" "idric" "not-run"
+  emit_stage fixture "document_construction" "SKIP" "blocked_by_network" "idric" "not-run"
+  emit_stage fixture "downstream_extraction" "SKIP" "blocked_by_network" "idric" "not-run"
+  emit_summary "network" "network"
+
+blocked_after_decompression : String → IO ()
+blocked_after_decompression fixture = do
+  emit_stage fixture "decoding" "SKIP" "blocked_by_decompression" "idric" "not-run"
+  emit_stage fixture "html_recovery" "SKIP" "blocked_by_decompression" "idric" "not-run"
+  emit_stage fixture "document_construction" "SKIP" "blocked_by_decompression" "idric" "not-run"
+  emit_stage fixture "downstream_extraction" "SKIP" "blocked_by_decompression" "idric" "not-run"
+  emit_summary "decompression" "decompression"
+
+blocked_after_decoding : String → IO ()
+blocked_after_decoding fixture = do
+  emit_stage fixture "html_recovery" "SKIP" "blocked_by_decoding" "idric" "not-run"
+  emit_stage fixture "document_construction" "SKIP" "blocked_by_decoding" "idric" "not-run"
+  emit_stage fixture "downstream_extraction" "SKIP" "blocked_by_decoding" "idric" "not-run"
+  emit_summary "decoding" "decoding"
+
+or_unknown : String → Maybe String → String
+or_unknown fallback Nothing = fallback
+or_unknown fallback (Just value) = value
+
+emit_headers : String → String → String → String → String → String → IO ()
+emit_headers fixture corpus_revision corpus_repository_revision
+             implementation_revision executable_sha256 scope = do
+  emit_meta "schema" "aici-ingestion-receipt-v1"
+  emit_meta "corpus_revision" corpus_revision
+  emit_meta "corpus_repository_revision" corpus_repository_revision
+  emit_meta "fixture_id" fixture
+  emit_meta "implementation_role" "implementation-under-test"
+  emit_meta "implementation_name" "icu-idric-native-transport"
+  emit_meta "implementation_revision" implementation_revision
+  emit_meta "executable_sha256" executable_sha256
+  emit_meta "fallback" "none"
+  emit_meta "scope" scope
+  emit_meta "producer" "idric+native-c"
+
+network_failure : String → Int → List String → IO ()
+network_failure fixture result metadata = do
+  let http_status = or_unknown "unknown" (metadata_value "http_status" metadata)
+  let received = or_unknown "unknown" (metadata_value "received_length" metadata)
+  let evidence = "status=" ++ http_status ++ ";received_length=" ++ received
+  case result of
+    5 ⇒ emit_stage fixture "network" "FAIL" "tls_handshake_failure" "idric+icu-native-c" evidence
+    9 ⇒ emit_stage fixture "network" "FAIL" "partial_body" "idric+icu-native-c" evidence
+    10 ⇒ emit_stage fixture "network" "FAIL" "non_2xx" "idric+icu-native-c" evidence
+    _ ⇒ emit_stage fixture "network" "FAIL" "transport_failure" "idric+icu-native-c" ("transport_code=" ++ show result)
+  blocked_after_network fixture
+
+continue_after_network : String → String → List String → IO ()
+continue_after_network fixture body_path metadata = do
+  let http_status = or_unknown "unknown" (metadata_value "http_status" metadata)
+  let received = or_unknown "unknown" (metadata_value "received_length" metadata)
+  let content_encoding = or_unknown "unknown" (metadata_value "content_encoding" metadata)
+  let content_type = or_unknown "unknown" (metadata_value "content_type" metadata)
+  let utf8 = or_unknown "invalid" (metadata_value "utf8" metadata)
+  emit_stage fixture "network" "PASS" "complete_response" "idric+icu-native-c"
+    ("status=" ++ http_status ++ ";received_length=" ++ received)
+  if content_encoding /= "identity"
+    then do
+      emit_stage fixture "decompression" "FAIL" "unsupported_content_encoding"
+        "idric" content_encoding
+      blocked_after_decompression fixture
+    else do
+      emit_stage fixture "decompression" "PASS" "identity" "idric" "identity"
+      if not (contains_text "charset=utf-8" content_type)
+        then do
+          emit_stage fixture "decoding" "FAIL" "unknown_charset" "idric" content_type
+          blocked_after_decoding fixture
+        else if utf8 /= "valid"
+          then do
+            emit_stage fixture "decoding" "FAIL" "invalid_utf8" "idric+icu-native-c" "invalid-byte-sequence"
+            blocked_after_decoding fixture
+          else do
+            emit_stage fixture "decoding" "PASS" "utf8_valid" "idric+icu-native-c"
+              ("utf8=valid;bytes=" ++ received)
+            body_result ← readFile body_path
+            case body_result of
+              Left _ ⇒ do
+                emit_stage fixture "html_recovery" "FAIL" "body_read_failure" "idric" "read-failed"
+                emit_stage fixture "document_construction" "SKIP" "blocked_by_html_recovery" "idric" "not-run"
+                emit_stage fixture "downstream_extraction" "SKIP" "blocked_by_html_recovery" "idric" "not-run"
+                emit_summary "html_recovery" "html_recovery"
+              Right body ⇒ do
+                let built_document = build_document_log body
+                let recovery = if body == "" then "recovery=empty" else "recovery=subset"
+                emit_stage fixture "html_recovery" "PASS" "document_log_subset_v0" "idric" recovery
+                emit_stage fixture "document_construction" "PASS" "document_log_built" "idric"
+                  ("title=" ++ receipt_key (document_title built_document))
+                emit_stage fixture "downstream_extraction" "SKIP" "not_applicable_scope" "idric" "not-run"
+                emit_summary "none" "none"
+
+run : String → String → String → String → String → String → String → String → IO ()
+run url_text fixture corpus_revision corpus_repository_revision
+    implementation_revision executable_sha256 body_path metadata_path = do
+  emit_headers fixture corpus_revision corpus_repository_revision
+    implementation_revision executable_sha256 "network-through-document"
+  emit_stage fixture "input_acquisition" "PASS" "attempted" "idric" "attempted"
+  case parse_url url_text of
+    Left _ ⇒ do
+      emit_stage fixture "network" "FAIL" "invalid_url" "idric" "parse-failed"
+      blocked_after_network fixture
+    Right target_url ⇒ do
+      result ← fetch_to_files (get target_url) body_path metadata_path
+      metadata_result ← readFile metadata_path
+      let metadata = case metadata_result of
+            Left _ ⇒ []
+            Right value ⇒ lines value
+      if result == 0
+        then continue_after_network fixture body_path metadata
+        else network_failure fixture result metadata
+
+usage : IO ()
+usage = do
+  putStrLn
+    "usage: icu-ingestion URL FIXTURE CORPUS_REVISION CORPUS_REPOSITORY_REVISION IMPLEMENTATION_REVISION EXECUTABLE_SHA256 BODY_PATH METADATA_PATH"
+  exitFailure
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: url_text :: fixture :: corpus_revision :: corpus_repository_revision ::
+      implementation_revision :: executable_sha256 :: body_path :: metadata_path :: [] ⇒
+        run url_text fixture corpus_revision corpus_repository_revision
+          implementation_revision executable_sha256 body_path metadata_path
+    _ ⇒ usage
