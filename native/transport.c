@@ -692,7 +692,20 @@ static int endpoint_authority(const endpoint *value, char *output, size_t capaci
     return written > 0 && (size_t)written < capacity;
 }
 
-static char *rewrite_get_request(const char *request, const endpoint *next) {
+static int same_origin(const endpoint *left, const endpoint *right) {
+    return left->use_tls == right->use_tls &&
+           left->port == right->port &&
+           strcasecmp(left->host, right->host) == 0;
+}
+
+static int header_line_named(const char *line, size_t line_length, const char *name) {
+    size_t name_length = strlen(name);
+    return line_length > name_length && line[name_length] == ':' &&
+           strncasecmp(line, name, name_length) == 0;
+}
+
+static char *rewrite_get_request_with_policy(const char *request, const endpoint *next,
+                                             int preserve_sensitive) {
     const char *line_end = strstr(request, "\r\n");
     if (line_end == NULL) {
         return NULL;
@@ -730,7 +743,7 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
             break;
         }
 
-        if (line_length >= 5 && strncasecmp(cursor, "Host:", 5) == 0) {
+        if (header_line_named(cursor, line_length, "Host")) {
             written = snprintf(output + used, capacity - used, "Host: %s\r\n", authority);
             replaced_host = 1;
             if (written < 0 || (size_t)written >= capacity - used) {
@@ -738,6 +751,10 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
                 return NULL;
             }
             used += (size_t)written;
+        } else if (!preserve_sensitive &&
+                   (header_line_named(cursor, line_length, "Authorization") ||
+                    header_line_named(cursor, line_length, "Cookie"))) {
+            /* Match curl: do not forward these credentials to another origin. */
         } else {
             if (line_length + 2 >= capacity - used) {
                 free(output);
@@ -766,6 +783,10 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
     }
     memcpy(output + used, "\r\n", 3);
     return output;
+}
+
+static char *rewrite_get_request(const char *request, const endpoint *next) {
+    return rewrite_get_request_with_policy(request, next, 1);
 }
 
 static int valid_wire_request(const char *request) {
@@ -891,7 +912,8 @@ static int send_request(const char *host, int port, const char *request_headers,
             complain("unsupported redirect location");
             return 8;
         }
-        char *next_request = rewrite_get_request(current_request, &next);
+        char *next_request = rewrite_get_request_with_policy(
+            current_request, &next, same_origin(&current, &next));
         if (next_request == NULL) {
             close_connection(&opened);
             free(current_request);
