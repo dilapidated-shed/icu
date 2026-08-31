@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: isomorphisms/Idric
-          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          ref: 47557b43053c829d4f8aa1581007002b57f9c59f
           path: .tools/Idric
 
       - name: Checkout Idric-Net
