@@ -3,14 +3,68 @@ module Http
 %default total
 
 public export
+record HostName where
+  constructor MkHostName
+  host_name_text : String
+
+public export
+record Port where
+  constructor MkPort
+  bits : Bits16
+
+public export
+mk_port : Integer → Maybe Port
+mk_port number =
+  if number >= 0 && number <= 65535
+    then Just (MkPort (cast number))
+    else Nothing
+
+public export
+port_number : Port → Int
+port_number (MkPort number) = cast number
+
+public export
+record RequestTarget where
+  constructor MkRequestTarget
+  request_target_text : String
+
+public export
+record HttpBody where
+  constructor MkHttpBody
+  http_body_text : String
+
+public export
+record ByteCount where
+  constructor MkByteCount
+  byte_count_value : ℕ
+
+public export
+record HttpHeader where
+  constructor MkHttpHeader
+  header_name : String
+  header_value : String
+
+public export
+record HttpRequestHead where
+  constructor MkHttpRequestHead
+  request_head_text : String
+
+public export
+record RenderedRequest where
+  constructor MkRenderedRequest
+  request_head : HttpRequestHead
+  request_body : HttpBody
+  request_body_length : ByteCount
+
+public export
 choice url one_of
-  http_url String Nat String
-  https_url String Nat String
+  http_url HostName Port RequestTarget
+  https_url HostName Port RequestTarget
 
 public export
 choice request one_of
   get url
-  post url String
+  post url HttpBody
 
 strip_prefix : List Char → List Char → Maybe (List Char)
 strip_prefix [] input = Just input
@@ -38,7 +92,7 @@ split_port (character :: rest) =
   let (host_name, port_text) = split_port rest in
     (character :: host_name, port_text)
 
-digit_value : Char → Maybe Nat
+digit_value : Char → Maybe ℕ
 digit_value '0' = Just 0
 digit_value '1' = Just 1
 digit_value '2' = Just 2
@@ -51,23 +105,23 @@ digit_value '8' = Just 8
 digit_value '9' = Just 9
 digit_value _ = Nothing
 
-parse_digits : Nat → List Char → Maybe Nat
+parse_digits : ℕ → List Char → Maybe ℕ
 parse_digits accumulated [] = Just accumulated
 parse_digits accumulated (character :: rest) =
   case digit_value character of
     Nothing => Nothing
     Just digit => parse_digits (accumulated * 10 + digit) rest
 
-parse_port : List Char → Either String Nat
+parse_port : List Char → Either String Port
 parse_port [] = Left "port is empty"
 parse_port characters =
   case parse_digits 0 characters of
     Nothing => Left "port must contain only decimal digits"
     Just 0 => Left "port must be between 1 and 65535"
     Just number =>
-      if number <= 65535
-        then Right number
-        else Left "port must be between 1 and 65535"
+      case mk_port (cast number) of
+        Nothing => Left "port must be between 1 and 65535"
+        Just valid_port => Right valid_port
 
 drop_fragment : List Char → List Char
 drop_fragment [] = []
@@ -88,16 +142,16 @@ all_characters predicate (character :: rest) =
   predicate character && all_characters predicate rest
 
 make_url :
-  (String → Nat → String → url) →
-  Nat →
+  (HostName → Port → RequestTarget → url) →
+  Port →
   List Char →
   Either String url
 make_url build_url default_port input =
   let (authority, raw_target) = split_authority input
       request_characters = drop_fragment raw_target
       (host_characters, port_text) = split_port authority
-      request_target = pack request_characters
-      normalized_target = if request_target == "" then "/" else request_target
+      target_text = pack request_characters
+      normalized_target = if target_text == "" then "/" else target_text
   in if not (all_characters safe_authority_character authority)
        then Left "URL authority must be visible ASCII without userinfo"
        else if not (all_characters visible_http_character request_characters)
@@ -105,36 +159,37 @@ make_url build_url default_port input =
          else case host_characters of
            [] => Left "URL host is empty"
            _ =>
-             let host_name = pack host_characters in
-               case port_text of
-                 Nothing => Right (build_url host_name default_port normalized_target)
-                 Just characters =>
-                   case parse_port characters of
-                     Left problem => Left problem
-                     Right number => Right (build_url host_name number normalized_target)
+             let host_name = MkHostName (pack host_characters)
+                 request_target = MkRequestTarget normalized_target
+             in case port_text of
+               Nothing => Right (build_url host_name default_port request_target)
+               Just characters =>
+                 case parse_port characters of
+                   Left problem => Left problem
+                   Right valid_port => Right (build_url host_name valid_port request_target)
 
 public export
 parse_url : String → Either String url
 parse_url text =
   case strip_prefix (unpack "http://") (unpack text) of
-    Just rest => make_url http_url 80 rest
+    Just rest => make_url http_url (MkPort 80) rest
     Nothing =>
       case strip_prefix (unpack "https://") (unpack text) of
-        Just rest => make_url https_url 443 rest
+        Just rest => make_url https_url (MkPort 443) rest
         Nothing => Left "URL must begin with http:// or https://"
 
 public export
-host : url → String
+host : url → HostName
 host (http_url name _ _) = name
 host (https_url name _ _) = name
 
 public export
-port : url → Nat
+port : url → Port
 port (http_url _ number _) = number
 port (https_url _ number _) = number
 
 public export
-target : url → String
+target : url → RequestTarget
 target (http_url _ _ path) = path
 target (https_url _ _ path) = path
 
@@ -145,18 +200,30 @@ secure (https_url _ _ _) = True
 
 public export
 authority : url → String
-authority (http_url name 80 _) = name
-authority (https_url name 443 _) = name
-authority value = host value ++ ":" ++ show (port value)
+authority value =
+  let number = port_number (port value)
+      default_port = if secure value then 443 else 80
+      name = host_name_text (host value)
+  in if number == default_port
+       then name
+       else name ++ ":" ++ show number
 
-common_headers : url → String
+render_header : HttpHeader → String
+render_header (MkHttpHeader name value) = name ++ ": " ++ value ++ "\r\n"
+
+render_headers : List HttpHeader → String
+render_headers [] = ""
+render_headers (header :: rest) = render_header header ++ render_headers rest
+
+common_headers : url → List HttpHeader
 common_headers target_url =
-  "Host: " ++ authority target_url ++ "\r\n" ++
-  "Connection: close\r\n" ++
-  "Accept-Encoding: identity\r\n" ++
-  "User-Agent: icu/0.1\r\n"
+  MkHttpHeader "Host" (authority target_url) ::
+  MkHttpHeader "Connection" "close" ::
+  MkHttpHeader "Accept-Encoding" "identity" ::
+  MkHttpHeader "User-Agent" "icu/0.1" ::
+  []
 
-utf8_character_bytes : Char → Int
+utf8_character_bytes : Char → ℕ
 utf8_character_bytes character =
   let code = ord character in
     if code <= 127
@@ -167,35 +234,43 @@ utf8_character_bytes character =
           then 3
           else 4
 
-utf8_byte_length_characters : List Char → Int
+utf8_byte_length_characters : List Char → ℕ
 utf8_byte_length_characters [] = 0
 utf8_byte_length_characters (character :: rest) =
   utf8_character_bytes character + utf8_byte_length_characters rest
 
 public export
-utf8_byte_length : String → Int
-utf8_byte_length text = utf8_byte_length_characters (unpack text)
+utf8_byte_length : String → ByteCount
+utf8_byte_length text = MkByteCount (utf8_byte_length_characters (unpack text))
+
+request_line : String → url → String
+request_line method target_url =
+  method ++ " " ++ request_target_text (target target_url) ++ " HTTP/1.0\r\n"
 
 public export
-render_request_parts : request → (String, String, Int)
+render_request_parts : request → RenderedRequest
 render_request_parts (get target_url) =
-  ("GET " ++ target target_url ++ " HTTP/1.0\r\n" ++
-   common_headers target_url ++
-   "\r\n",
-   "",
-   0)
+  let wire_head =
+        request_line "GET" target_url ++
+        render_headers (common_headers target_url) ++
+        "\r\n"
+  in MkRenderedRequest (MkHttpRequestHead wire_head) (MkHttpBody "") (MkByteCount 0)
 render_request_parts (post target_url body) =
-  let body_length = utf8_byte_length body in
-    ("POST " ++ target target_url ++ " HTTP/1.0\r\n" ++
-     common_headers target_url ++
-     "Content-Type: text/plain; charset=utf-8\r\n" ++
-     "Content-Length: " ++ show body_length ++ "\r\n" ++
-     "\r\n",
-     body,
-     body_length)
+  let body_length = utf8_byte_length (http_body_text body)
+      post_headers =
+        common_headers target_url ++
+        (MkHttpHeader "Content-Type" "text/plain; charset=utf-8" ::
+         MkHttpHeader "Content-Length" (show (byte_count_value body_length)) ::
+         [])
+      wire_head =
+        request_line "POST" target_url ++
+        render_headers post_headers ++
+        "\r\n"
+  in MkRenderedRequest (MkHttpRequestHead wire_head) body body_length
 
 public export
 render_request : request → Either String String
 render_request value =
   case render_request_parts value of
-    (wire_headers, body, _) => Right (wire_headers ++ body)
+    MkRenderedRequest wire_head body _ =>
+      Right (request_head_text wire_head ++ http_body_text body)
