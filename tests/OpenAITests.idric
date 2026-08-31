@@ -13,8 +13,8 @@ expect_equal name expected actual =
 
 expect_output : String → String → String → IO ()
 expect_output name response expected =
-  case extract_output_text response of
-    Nothing => die ("FAIL " ++ name ++ ": no output_text")
+  case extract_answer_text response of
+    Nothing => die ("FAIL " ++ name ++ ": no answer text")
     Just actual => expect_equal name expected actual
 
 main : IO ()
@@ -39,6 +39,10 @@ main = do
     "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"face: \\ud83d\\ude00\"}]}]}"
     "face: 😀"
 
-  case extract_output_text "{\"error\":{\"message\":\"no answer\"}}" of
+  expect_output "structured-refusal"
+    "{\"output\":[{\"content\":[{\"type\":\"refusal\",\"refusal\":\"I cannot help with that request.\"}]}]}"
+    "I cannot help with that request."
+
+  case extract_answer_text "{\"error\":{\"message\":\"no answer\"}}" of
     Nothing => putStrLn "PASS missing-output"
     Just _ => die "FAIL missing-output"
