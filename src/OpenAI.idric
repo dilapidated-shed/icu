@@ -261,6 +261,37 @@ check_response metadata body =
             Nothing => Left "OpenAI response contained no output_text or refusal message"
             Just answer => Right answer
 
+run_target : String → String → String → url → IO (Either String String)
+run_target api_key model prompt target_url = do
+  let body = responses_request_body model prompt
+  let wire_headers = request_headers target_url api_key body
+  pid ← getPID
+  temp_root ← env_or "TMPDIR" "/tmp"
+  let prefix = temp_root ++ "/icu-openai-" ++ show pid
+  let body_path = prefix ++ ".json"
+  let metadata_path = prefix ++ ".meta"
+  result ← fetch_raw_to_files target_url wire_headers body
+    (utf8_byte_length body) body_path metadata_path
+  metadata_result ← readFile metadata_path
+  body_result ← readFile body_path
+  cleanup_files body_path metadata_path
+  let metadata = case metadata_result of
+        Left _ => []
+        Right text => lines text
+  if result /= 0
+    then pure (Left (response_problem result metadata))
+    else case body_result of
+      Left _ => pure (Left "could not read OpenAI response body")
+      Right response_body => pure (check_response metadata response_body)
+
+query_prompt : String → String → IO (Either String String)
+query_prompt api_key prompt = do
+  url_text ← env_or "OPENAI_RESPONSES_URL" default_responses_url
+  model ← env_or "OPENAI_MODEL" default_model
+  case parse_url url_text of
+    Left problem => pure (Left ("invalid OPENAI_RESPONSES_URL: " ++ problem))
+    Right target_url => run_target api_key model prompt target_url
+
 public export
 covering
 query_stdin : IO (Either String String)
@@ -278,29 +309,4 @@ query_stdin = do
             Right prompt =>
               if prompt == ""
                 then pure (Left "prompt on stdin is empty")
-                else do
-                  url_text ← env_or "OPENAI_RESPONSES_URL" default_responses_url
-                  model ← env_or "OPENAI_MODEL" default_model
-                  case parse_url url_text of
-                    Left problem => pure (Left ("invalid OPENAI_RESPONSES_URL: " ++ problem))
-                    Right target_url => do
-                      let body = responses_request_body model prompt
-                      let wire_headers = request_headers target_url api_key body
-                      pid ← getPID
-                      temp_root ← env_or "TMPDIR" "/tmp"
-                      let prefix = temp_root ++ "/icu-openai-" ++ show pid
-                      let body_path = prefix ++ ".json"
-                      let metadata_path = prefix ++ ".meta"
-                      result ← fetch_raw_to_files target_url wire_headers body
-                        (utf8_byte_length body) body_path metadata_path
-                      metadata_result ← readFile metadata_path
-                      body_result ← readFile body_path
-                      cleanup_files body_path metadata_path
-                      let metadata = case metadata_result of
-                            Left _ => []
-                            Right text => lines text
-                      if result /= 0
-                        then pure (Left (response_problem result metadata))
-                        else case body_result of
-                          Left _ => pure (Left "could not read OpenAI response body")
-                          Right response_body => pure (check_response metadata response_body)
+                else query_prompt api_key prompt
