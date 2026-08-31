@@ -4,19 +4,18 @@ import Http
 import NativeTransport
 
 transmit :
-  url → HttpRequestHead → HttpBody → ByteCount → IO TransportExitStatus
+  url → HttpRequestHead → HttpBody → ByteCount → IO (Either String TransportResult)
 transmit (http_url name number _) wire_head body body_length =
   send_plain_http name number wire_head body body_length
 transmit (https_url name number _) wire_head body body_length =
   send_verified_tls name number wire_head body body_length
 
 public export
-send_request : request → IO (Either String TransportExitStatus)
+send_request : request → IO (Either String TransportResult)
 send_request value =
   case render_request_parts value of
-    MkRenderedRequest wire_head body body_length => do
-      status ← transmit value_url wire_head body body_length
-      pure (Right status)
+    MkRenderedRequest wire_head body body_length =>
+      transmit value_url wire_head body body_length
   where
     value_url : url
     value_url =
