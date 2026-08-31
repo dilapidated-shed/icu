@@ -1,0 +1,44 @@
+module Main
+
+import OpenAI
+import System
+
+expect : String → Bool → IO ()
+expect name True = putStrLn ("PASS " ++ name)
+expect name False = die ("FAIL " ++ name)
+
+expect_equal : String → String → String → IO ()
+expect_equal name expected actual =
+  expect name (expected == actual)
+
+expect_output : String → String → String → IO ()
+expect_output name response expected =
+  case extract_output_text response of
+    Nothing => die ("FAIL " ++ name ++ ": no output_text")
+    Just actual => expect_equal name expected actual
+
+main : IO ()
+main = do
+  expect_equal "json-basic"
+    "\"line 1\\n\\\"quoted\\\"\\tend\""
+    (json_string "line 1\n\"quoted\"\tend")
+
+  expect_equal "request-body"
+    "{\"model\":\"test-model\",\"input\":\"hello\\nworld\",\"store\":false}"
+    (responses_request_body "test-model" "hello\nworld")
+
+  expect_output "responses-shape"
+    "{\"id\":\"resp_test\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"annotations\":[],\"text\":\"answer\\nline 2\"}]}]}"
+    "answer\nline 2"
+
+  expect_output "unicode-escape"
+    "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"snowman: \\u2603\"}]}]}"
+    "snowman: ☃"
+
+  expect_output "surrogate-pair"
+    "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"face: \\ud83d\\ude00\"}]}]}"
+    "face: 😀"
+
+  case extract_output_text "{\"error\":{\"message\":\"no answer\"}}" of
+    Nothing => putStrLn "PASS missing-output"
+    Just _ => die "FAIL missing-output"
