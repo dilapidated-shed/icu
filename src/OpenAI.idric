@@ -167,24 +167,41 @@ find_string_field wanted input@('"' :: _) =
         _ => find_string_field wanted after_name
 find_string_field wanted (_ :: rest) = find_string_field wanted rest
 
-find_output_text_marker : List Char → Maybe (List Char)
-find_output_text_marker input =
+find_content_marker : String → List Char → Maybe (List Char)
+find_content_marker wanted input =
   case find_string_field "type" input of
     Nothing => Nothing
     Just (kind, rest) =>
-      if kind == "output_text"
+      if kind == wanted
         then Just rest
-        else find_output_text_marker rest
+        else find_content_marker wanted rest
 
 public export
 extract_output_text : String → Maybe String
 extract_output_text response =
-  case find_output_text_marker (unpack response) of
+  case find_content_marker "output_text" (unpack response) of
     Nothing => Nothing
     Just rest =>
       case find_string_field "text" rest of
         Nothing => Nothing
         Just (text, _) => Just text
+
+public export
+extract_refusal : String → Maybe String
+extract_refusal response =
+  case find_content_marker "refusal" (unpack response) of
+    Nothing => Nothing
+    Just rest =>
+      case find_string_field "refusal" rest of
+        Nothing => Nothing
+        Just (text, _) => Just text
+
+public export
+extract_answer_text : String → Maybe String
+extract_answer_text response =
+  case extract_output_text response of
+    Just text => Just text
+    Nothing => extract_refusal response
 
 request_headers : url → String → String → String
 request_headers target_url api_key body =
@@ -240,8 +257,8 @@ check_response metadata body =
         then Left ("OpenAI response used unsupported content encoding: " ++ content_encoding)
         else if utf8 /= "valid"
           then Left "OpenAI response is not valid UTF-8"
-          else case extract_output_text body of
-            Nothing => Left "OpenAI response contained no output_text message"
+          else case extract_answer_text body of
+            Nothing => Left "OpenAI response contained no output_text or refusal message"
             Just answer => Right answer
 
 public export
