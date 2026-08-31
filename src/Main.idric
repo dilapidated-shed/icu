@@ -1,6 +1,7 @@
 module Main
 
 import Http
+import NativeTransport
 import System
 import Transport
 
@@ -37,7 +38,7 @@ run arguments =
       outcome ← send_request value
       case outcome of
         Left problem => fail_with problem
-        Right status => exitWith (cast (transport_exit_code status))
+        Right result => exitWith (cast (process_exit_status result))
 
 main : IO ()
 main = do
