@@ -1,0 +1,43 @@
+module NativeTransport
+
+import Http
+
+public export
+record TransportExitStatus where
+  constructor MkTransportExitStatus
+  transport_exit_code : Int
+
+%foreign "C:icu_send_http,libicu_transport"
+prim_send_http : String → Int → String → String → Int → PrimIO Int
+
+%foreign "C:icu_send_https,libicu_transport"
+prim_send_https : String → Int → String → String → Int → PrimIO Int
+
+body_length_int : ByteCount → Int
+body_length_int (MkByteCount number) = cast number
+
+public export
+send_plain_http :
+  HostName → Port → HttpRequestHead → HttpBody → ByteCount → IO TransportExitStatus
+send_plain_http host_name port_number_value wire_head body body_length = do
+  status ← primIO
+    (prim_send_http
+      (host_name_text host_name)
+      (port_number port_number_value)
+      (request_head_text wire_head)
+      (http_body_text body)
+      (body_length_int body_length))
+  pure (MkTransportExitStatus status)
+
+public export
+send_verified_tls :
+  HostName → Port → HttpRequestHead → HttpBody → ByteCount → IO TransportExitStatus
+send_verified_tls host_name port_number_value wire_head body body_length = do
+  status ← primIO
+    (prim_send_https
+      (host_name_text host_name)
+      (port_number port_number_value)
+      (request_head_text wire_head)
+      (http_body_text body)
+      (body_length_int body_length))
+  pure (MkTransportExitStatus status)
