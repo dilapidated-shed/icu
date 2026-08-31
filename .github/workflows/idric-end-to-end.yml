@@ -21,6 +21,13 @@ jobs:
           ref: 61970be77769f607cca8650bf424c0f0b22ddee7
           path: .tools/Idric
 
+      - name: Checkout Idric-Net
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric-Net
+          ref: 29196e9bfed1e4f2b6f8c880106b197d6a4aac02
+          path: .tools/Idric-Net
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -30,6 +37,13 @@ jobs:
         run: |
           make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
           "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --version
+
+      - name: Install Idric-Net package
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          cd "$GITHUB_WORKSPACE/.tools/Idric-Net"
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --install idric-net.ipkg
 
       - name: Compile ICU through Idric
         env:
