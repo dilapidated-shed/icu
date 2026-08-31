@@ -3,6 +3,6 @@ package icu
 version = 0.1.0
 sourcedir = "src"
 
-modules = Http, Transport, Main
+modules = Http, NativeTransport, Transport, Main
 main = Main
 executable = icu

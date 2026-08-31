@@ -9,19 +9,36 @@ check : String → Bool → IO ()
 check name True = putStrLn ("ok   " ++ name)
 check name False = putStrLn ("FAIL " ++ name)
 
+bounded_port : Bool
+bounded_port =
+  case (mk_port 0, mk_port 65535, mk_port (-1), mk_port 65536) of
+    (Just low, Just high, Nothing, Nothing) =>
+      port_number low == 0 && port_number high == 65535
+    _ => False
+
 https_default : Bool
 https_default =
   case parse_url "https://example.com/a?b=1#fragment" of
     Right (https_url name number path) =>
-      name == "example.com" && number == 443 && path == "/a?b=1"
+      host_name_text name == "example.com" &&
+      port_number number == 443 &&
+      request_target_text path == "/a?b=1"
     _ => False
 
 http_explicit_port : Bool
 http_explicit_port =
   case parse_url "http://localhost:8080/hello" of
     Right (http_url name number path) =>
-      name == "localhost" && number == 8080 && path == "/hello"
+      host_name_text name == "localhost" &&
+      port_number number == 8080 &&
+      request_target_text path == "/hello"
     _ => False
+
+reject_zero_url_port : Bool
+reject_zero_url_port =
+  case parse_url "http://localhost:0/" of
+    Left _ => True
+    Right _ => False
 
 reject_other_scheme : Bool
 reject_other_scheme =
@@ -41,6 +58,11 @@ reject_header_injection =
     Left _ => True
     Right _ => False
 
+header_has_own_type : Bool
+header_has_own_type =
+  let header = MkHttpHeader "X-Test" "value" in
+    header_name header == "X-Test" && header_value header == "value"
+
 render_get : Bool
 render_get =
   case parse_url "http://example.com/" of
@@ -57,19 +79,19 @@ render_get =
 
 utf8_lengths : Bool
 utf8_lengths =
-  utf8_byte_length "" == 0 &&
-  utf8_byte_length "ASCII" == 5 &&
-  utf8_byte_length "café" == 5 &&
-  utf8_byte_length "Aé€🙂" == 10
+  byte_count_value (utf8_byte_length "") == 0 &&
+  byte_count_value (utf8_byte_length "ASCII") == 5 &&
+  byte_count_value (utf8_byte_length "café") == 5 &&
+  byte_count_value (utf8_byte_length "Aé€🙂") == 10
 
 render_utf8_post : Bool
 render_utf8_post =
   case parse_url "https://example.com/message" of
     Left _ => False
     Right target_url =>
-      case render_request_parts (post target_url "café") of
-        (wire_headers, body, body_length) =>
-          wire_headers ==
+      case render_request_parts (post target_url (MkHttpBody "café")) of
+        MkRenderedRequest wire_head body body_length =>
+          request_head_text wire_head ==
             ("POST /message HTTP/1.0\r\n" ++
              "Host: example.com\r\n" ++
              "Connection: close\r\n" ++
@@ -78,28 +100,34 @@ render_utf8_post =
              "Content-Type: text/plain; charset=utf-8\r\n" ++
              "Content-Length: 5\r\n" ++
              "\r\n") &&
-          body == "café" &&
-          body_length == 5
+          http_body_text body == "café" &&
+          byte_count_value body_length == 5
 
 all_pass : Bool
 all_pass =
+  bounded_port &&
   https_default &&
   http_explicit_port &&
+  reject_zero_url_port &&
   reject_other_scheme &&
   reject_userinfo &&
   reject_header_injection &&
+  header_has_own_type &&
   render_get &&
   utf8_lengths &&
   render_utf8_post
 
 main : IO ()
 main = do
+  check "Port covers the 16-bit unsigned range" bounded_port
   check "https default port, query, fragment" https_default
   check "http explicit port" http_explicit_port
+  check "URL parser rejects destination port zero" reject_zero_url_port
   check "reject non-http scheme" reject_other_scheme
   check "reject URL userinfo" reject_userinfo
   check "reject header injection" reject_header_injection
+  check "HTTP headers have a nominal type" header_has_own_type
   check "GET wire form requests identity encoding" render_get
-  check "UTF-8 byte lengths" utf8_lengths
-  check "POST carries UTF-8 body with byte Content-Length" render_utf8_post
+  check "UTF-8 byte lengths use ByteCount" utf8_lengths
+  check "POST carries typed UTF-8 body and byte count" render_utf8_post
   if all_pass then pure () else exitFailure
