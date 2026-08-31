@@ -1,6 +1,9 @@
 name: Idric compile diagnostic
 
 on:
+  push:
+    branches:
+      - use-idric-net
   pull_request:
   workflow_dispatch:
 
