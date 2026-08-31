@@ -38,6 +38,7 @@ jobs:
           IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
         run: |
           make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+          make -C "$GITHUB_WORKSPACE/.tools/Idric" test only=idris2/basic/edric005
           make check-native
           make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
           "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" \
