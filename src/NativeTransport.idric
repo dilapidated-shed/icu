@@ -3,9 +3,15 @@ module NativeTransport
 import Http
 
 public export
-record TransportExitStatus where
-  constructor MkTransportExitStatus
-  transport_exit_code : Int
+choice TransportResult one_of
+  transport_ok
+  invalid_request
+  invalid_endpoint
+  tcp_connect_failed
+  tls_connect_failed
+  request_write_failed
+  response_read_failed
+  redirect_failed
 
 %foreign "C:icu_send_http,libicu_transport"
 prim_send_http : String → Int → String → String → Int → PrimIO Int
@@ -16,28 +22,50 @@ prim_send_https : String → Int → String → String → Int → PrimIO Int
 body_length_int : ByteCount → Int
 body_length_int (MkByteCount number) = cast number
 
+decode_transport_result : Int → Either String TransportResult
+decode_transport_result 0 = Right transport_ok
+decode_transport_result 2 = Right invalid_request
+decode_transport_result 3 = Right invalid_endpoint
+decode_transport_result 4 = Right tcp_connect_failed
+decode_transport_result 5 = Right tls_connect_failed
+decode_transport_result 6 = Right request_write_failed
+decode_transport_result 7 = Right response_read_failed
+decode_transport_result 8 = Right redirect_failed
+decode_transport_result _ = Left "native transport returned an unknown result code"
+
+public export
+process_exit_status : TransportResult → Int
+process_exit_status transport_ok = 0
+process_exit_status invalid_request = 2
+process_exit_status invalid_endpoint = 3
+process_exit_status tcp_connect_failed = 4
+process_exit_status tls_connect_failed = 5
+process_exit_status request_write_failed = 6
+process_exit_status response_read_failed = 7
+process_exit_status redirect_failed = 8
+
 public export
 send_plain_http :
-  HostName → Port → HttpRequestHead → HttpBody → ByteCount → IO TransportExitStatus
+  HostName → Port → HttpRequestHead → HttpBody → ByteCount → IO (Either String TransportResult)
 send_plain_http host_name port_number_value wire_head body body_length = do
-  status ← primIO
+  raw_result ← primIO
     (prim_send_http
       (host_name_text host_name)
       (port_number port_number_value)
       (request_head_text wire_head)
       (http_body_text body)
       (body_length_int body_length))
-  pure (MkTransportExitStatus status)
+  pure (decode_transport_result raw_result)
 
 public export
 send_verified_tls :
-  HostName → Port → HttpRequestHead → HttpBody → ByteCount → IO TransportExitStatus
+  HostName → Port → HttpRequestHead → HttpBody → ByteCount → IO (Either String TransportResult)
 send_verified_tls host_name port_number_value wire_head body body_length = do
-  status ← primIO
+  raw_result ← primIO
     (prim_send_https
       (host_name_text host_name)
       (port_number port_number_value)
       (request_head_text wire_head)
       (http_body_text body)
       (body_length_int body_length))
-  pure (MkTransportExitStatus status)
+  pure (decode_transport_result raw_result)
