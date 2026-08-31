@@ -10,21 +10,44 @@ import Transport
 usage : String
 usage =
   "usage:\n" ++
-  "  icu get  http://host/path\n" ++
-  "  icu get  https://host/path\n" ++
-  "  icu post http://host/path BODY\n" ++
-  "  icu post https://host/path BODY\n" ++
+  "  icu get  [-H 'Name: value']... http://host/path\n" ++
+  "  icu get  [-H 'Name: value']... https://host/path\n" ++
+  "  icu post [-H 'Name: value']... http://host/path BODY\n" ++
+  "  icu post [-H 'Name: value']... https://host/path BODY\n" ++
   "  icu openai < prompt.txt"
 
-parse_command : List String → Either String request
-parse_command ["get", text] =
-  case parse_url text of
+collect_headers :
+  List String → List request_header → Either String (List request_header, List String)
+collect_headers [] headers = Right (reverse headers, [])
+collect_headers ("-H" :: value :: rest) headers =
+  case parse_header value of
     Left problem => Left problem
-    Right target_url => Right (get target_url)
-parse_command ["post", text, body] =
-  case parse_url text of
+    Right parsed => collect_headers rest (parsed :: headers)
+collect_headers ("--header" :: value :: rest) headers =
+  case parse_header value of
     Left problem => Left problem
-    Right target_url => Right (post target_url body)
+    Right parsed => collect_headers rest (parsed :: headers)
+collect_headers ["-H"] _ = Left "-H requires a Name: value argument"
+collect_headers ["--header"] _ = Left "--header requires a Name: value argument"
+collect_headers arguments headers = Right (reverse headers, arguments)
+
+parse_command : List String → Either String (request, List request_header)
+parse_command ("get" :: arguments) =
+  case collect_headers arguments [] of
+    Left problem => Left problem
+    Right (headers, [text]) =>
+      case parse_url text of
+        Left problem => Left problem
+        Right target_url => Right (get target_url, headers)
+    Right _ => Left usage
+parse_command ("post" :: arguments) =
+  case collect_headers arguments [] of
+    Left problem => Left problem
+    Right (headers, [text, body]) =>
+      case parse_url text of
+        Left problem => Left problem
+        Right target_url => Right (post target_url body, headers)
+    Right _ => Left usage
 parse_command _ = Left usage
 
 fail_with : String → IO ()
@@ -44,8 +67,8 @@ run ["openai"] = run_openai
 run arguments =
   case parse_command arguments of
     Left problem => fail_with problem
-    Right value => do
-      outcome ← send_request value
+    Right (value, headers) => do
+      outcome ← send_request_with_headers value headers
       case outcome of
         Left problem => fail_with problem
         Right status => exitWith (cast status)
