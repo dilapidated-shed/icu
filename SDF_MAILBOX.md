@@ -26,9 +26,14 @@ Cap the locally retained first paragraph (for example around 1-2 KiB). With roug
 
 Do not decide this merely because the source currently looks like an mbox file over SSH.
 
-If the mailbox being inspected through SSH is the normal SDF mail spool exposed through IMAP, IMAP should be tried first. It naturally fits a read-only phone index because the client can ask the server for message metadata and selected body data without downloading and storing every complete message.
+SDF's current public mail-client documentation explicitly advertises both POP3 and IMAP. For IMAP it gives `mx.sdf.org`, including SSL/TLS on port 993. Its broader email documentation also notes an account-type caveat: VPM virtual mailboxes use POP3 rather than IMAP. References:
 
-POP3 is a possible smaller alternative, especially if restoring its curl implementation is substantially cheaper. It is less attractive for long-lived synchronization and selective access. It should be evaluated rather than assumed.
+- https://wiki.sdf.org/doku.php?id=setting_up_mail_clients
+- https://wiki.sdf.org/doku.php?id=email_at_sdf
+
+So IMAP should be tried first **if this particular mailbox is the normal SDF spool exposed to this account over IMAP**. It naturally fits a read-only phone index because the client can ask the server for message metadata and selected body data without downloading and storing every complete message.
+
+POP3 remains a possible smaller alternative, and it may be required for some SDF mailbox/account configurations. It is less attractive for long-lived synchronization and selective access, so it should be evaluated rather than assumed.
 
 Neither IMAP nor POP3 is a generic remote-mbox-file protocol. If the desired file is just an arbitrary mbox somewhere in the SDF home directory and is not the mailbox served by SDF's mail service, IMAP/POP3 will not magically expose that file. In that case the transport and the mbox parser are separate problems: stream the file somehow, then parse it incrementally.
 
@@ -56,9 +61,9 @@ Do **not** restore all of curl to get mail support. First determine which transp
 
 Likely experiment order:
 
-1. Confirm whether this SDF mailbox is reachable read-only over IMAP TLS.
+1. Confirm whether this exact SDF mailbox/account is reachable read-only over IMAP TLS.
 2. Measure the code/dependency increase from restoring minimal IMAP support to ICU.
-3. If IMAP is disproportionately expensive, measure minimal POP3 support before choosing.
+3. If IMAP is unavailable for the account or disproportionately expensive, measure minimal POP3 support before choosing.
 4. Independently write/test a streaming mbox/MIME parser against saved fixtures.
 5. Build the compact local index and only then add the phone UI.
 
