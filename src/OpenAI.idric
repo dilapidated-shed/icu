@@ -1,0 +1,289 @@
+module OpenAI
+
+import Data.String
+import Http
+import Ingestion
+import System
+import System.File
+import Transport
+
+public export
+default_responses_url : String
+default_responses_url = "https://api.openai.com/v1/responses"
+
+public export
+default_model : String
+default_model = "gpt-5.6-sol"
+
+header_value_safe_chars : List Char → Bool
+header_value_safe_chars [] = True
+header_value_safe_chars (value :: rest) =
+  ord value >= 32 && ord value < 127 && value /= '\r' && value /= '\n' &&
+  header_value_safe_chars rest
+
+header_value_safe : String → Bool
+header_value_safe value = value /= "" && header_value_safe_chars (unpack value)
+
+hex_digit : Int → Char
+hex_digit value =
+  if value < 10
+    then chr (ord '0' + value)
+    else chr (ord 'a' + value - 10)
+
+json_escape_chars : List Char → List Char
+json_escape_chars [] = []
+json_escape_chars ('"' :: rest) = '\\' :: '"' :: json_escape_chars rest
+json_escape_chars ('\\' :: rest) = '\\' :: '\\' :: json_escape_chars rest
+json_escape_chars ('\n' :: rest) = '\\' :: 'n' :: json_escape_chars rest
+json_escape_chars ('\r' :: rest) = '\\' :: 'r' :: json_escape_chars rest
+json_escape_chars ('\t' :: rest) = '\\' :: 't' :: json_escape_chars rest
+json_escape_chars (value :: rest) =
+  let code = ord value in
+    if code == 8
+      then '\\' :: 'b' :: json_escape_chars rest
+      else if code == 12
+        then '\\' :: 'f' :: json_escape_chars rest
+        else if code < 32
+          then '\\' :: 'u' :: '0' :: '0' ::
+               hex_digit (code `div` 16) :: hex_digit (code `mod` 16) ::
+               json_escape_chars rest
+          else value :: json_escape_chars rest
+
+public export
+json_string : String → String
+json_string value = "\"" ++ pack (json_escape_chars (unpack value)) ++ "\""
+
+public export
+responses_request_body : String → String → String
+responses_request_body model prompt =
+  "{\"model\":" ++ json_string model ++
+  ",\"input\":" ++ json_string prompt ++
+  ",\"store\":false}"
+
+hex_value : Char → Maybe Int
+hex_value value =
+  if value >= '0' && value <= '9'
+    then Just (ord value - ord '0')
+    else if value >= 'a' && value <= 'f'
+      then Just (10 + ord value - ord 'a')
+      else if value >= 'A' && value <= 'F'
+        then Just (10 + ord value - ord 'A')
+        else Nothing
+
+four_hex : List Char → Maybe (Int, List Char)
+four_hex (a :: b :: c :: d :: rest) =
+  case hex_value a of
+    Nothing => Nothing
+    Just av =>
+      case hex_value b of
+        Nothing => Nothing
+        Just bv =>
+          case hex_value c of
+            Nothing => Nothing
+            Just cv =>
+              case hex_value d of
+                Nothing => Nothing
+                Just dv => Just (av * 4096 + bv * 256 + cv * 16 + dv, rest)
+four_hex _ = Nothing
+
+unicode_escape : List Char → Maybe (Char, List Char)
+unicode_escape input =
+  case four_hex input of
+    Nothing => Nothing
+    Just (high, rest) =>
+      if high >= 55296 && high <= 56319
+        then case rest of
+          '\\' :: 'u' :: low_input =>
+            case four_hex low_input of
+              Nothing => Nothing
+              Just (low, remaining) =>
+                if low >= 56320 && low <= 57343
+                  then Just
+                    (chr (65536 + (high - 55296) * 1024 + (low - 56320)), remaining)
+                  else Nothing
+          _ => Nothing
+        else if high >= 56320 && high <= 57343
+          then Nothing
+          else Just (chr high, rest)
+
+parse_json_string_chars : List Char → List Char → Maybe (String, List Char)
+parse_json_string_chars acc [] = Nothing
+parse_json_string_chars acc ('"' :: rest) = Just (pack (reverse acc), rest)
+parse_json_string_chars acc ('\\' :: '"' :: rest) =
+  parse_json_string_chars ('"' :: acc) rest
+parse_json_string_chars acc ('\\' :: '\\' :: rest) =
+  parse_json_string_chars ('\\' :: acc) rest
+parse_json_string_chars acc ('\\' :: '/' :: rest) =
+  parse_json_string_chars ('/' :: acc) rest
+parse_json_string_chars acc ('\\' :: 'b' :: rest) =
+  parse_json_string_chars (chr 8 :: acc) rest
+parse_json_string_chars acc ('\\' :: 'f' :: rest) =
+  parse_json_string_chars (chr 12 :: acc) rest
+parse_json_string_chars acc ('\\' :: 'n' :: rest) =
+  parse_json_string_chars ('\n' :: acc) rest
+parse_json_string_chars acc ('\\' :: 'r' :: rest) =
+  parse_json_string_chars ('\r' :: acc) rest
+parse_json_string_chars acc ('\\' :: 't' :: rest) =
+  parse_json_string_chars ('\t' :: acc) rest
+parse_json_string_chars acc ('\\' :: 'u' :: rest) =
+  case unicode_escape rest of
+    Nothing => Nothing
+    Just (value, remaining) => parse_json_string_chars (value :: acc) remaining
+parse_json_string_chars acc ('\\' :: _ :: _) = Nothing
+parse_json_string_chars acc (value :: rest) =
+  if ord value < 32
+    then Nothing
+    else parse_json_string_chars (value :: acc) rest
+
+parse_json_string : List Char → Maybe (String, List Char)
+parse_json_string ('"' :: rest) = parse_json_string_chars [] rest
+parse_json_string _ = Nothing
+
+json_space : Char → Bool
+json_space value = value == ' ' || value == '\n' || value == '\r' || value == '\t'
+
+skip_json_space : List Char → List Char
+skip_json_space [] = []
+skip_json_space input@(value :: rest) =
+  if json_space value then skip_json_space rest else input
+
+find_string_field : String → List Char → Maybe (String, List Char)
+find_string_field wanted [] = Nothing
+find_string_field wanted input@('"' :: _) =
+  case parse_json_string input of
+    Nothing => Nothing
+    Just (name, after_name) =>
+      case skip_json_space after_name of
+        ':' :: after_colon =>
+          case skip_json_space after_colon of
+            value_input@('"' :: _) =>
+              case parse_json_string value_input of
+                Nothing => Nothing
+                Just (value, after_value) =>
+                  if name == wanted
+                    then Just (value, after_value)
+                    else find_string_field wanted after_value
+            _ => find_string_field wanted after_name
+        _ => find_string_field wanted after_name
+find_string_field wanted (_ :: rest) = find_string_field wanted rest
+
+find_output_text_marker : List Char → Maybe (List Char)
+find_output_text_marker input =
+  case find_string_field "type" input of
+    Nothing => Nothing
+    Just (kind, rest) =>
+      if kind == "output_text"
+        then Just rest
+        else find_output_text_marker rest
+
+public export
+extract_output_text : String → Maybe String
+extract_output_text response =
+  case find_output_text_marker (unpack response) of
+    Nothing => Nothing
+    Just rest =>
+      case find_string_field "text" rest of
+        Nothing => Nothing
+        Just (text, _) => Just text
+
+request_headers : url → String → String → String
+request_headers target_url api_key body =
+  "POST " ++ target target_url ++ " HTTP/1.0\r\n" ++
+  "Host: " ++ authority target_url ++ "\r\n" ++
+  "Connection: close\r\n" ++
+  "Accept-Encoding: identity\r\n" ++
+  "User-Agent: icu/0.1 openai-responses\r\n" ++
+  "Authorization: Bearer " ++ api_key ++ "\r\n" ++
+  "Content-Type: application/json\r\n" ++
+  "Content-Length: " ++ show (utf8_byte_length body) ++ "\r\n" ++
+  "\r\n"
+
+env_or : String → String → IO String
+env_or name fallback = do
+  value ← getEnv name
+  case value of
+    Nothing => pure fallback
+    Just "" => pure fallback
+    Just text => pure text
+
+cleanup_file : String → IO ()
+cleanup_file path = do
+  outcome ← removeFile path
+  case outcome of
+    Left _ => pure ()
+    Right () => pure ()
+
+cleanup_files : String → String → IO ()
+cleanup_files body_path metadata_path = do
+  cleanup_file body_path
+  cleanup_file metadata_path
+
+metadata_or : String → String → List String → String
+metadata_or key fallback metadata =
+  case metadata_value key metadata of
+    Nothing => fallback
+    Just value => value
+
+response_problem : Int → List String → String
+response_problem result metadata =
+  let status = metadata_or "http_status" "unknown" metadata in
+    "OpenAI request failed: transport_code=" ++ show result ++ ", http_status=" ++ status
+
+check_response : List String → String → Either String String
+check_response metadata body =
+  let content_type = metadata_or "content_type" "unknown" metadata
+      content_encoding = metadata_or "content_encoding" "unknown" metadata
+      utf8 = metadata_or "utf8" "unknown" metadata in
+    if not (contains_text "application/json" content_type)
+      then Left ("OpenAI response is not application/json: " ++ content_type)
+      else if content_encoding /= "identity"
+        then Left ("OpenAI response used unsupported content encoding: " ++ content_encoding)
+        else if utf8 /= "valid"
+          then Left "OpenAI response is not valid UTF-8"
+          else case extract_output_text body of
+            Nothing => Left "OpenAI response contained no output_text message"
+            Just answer => Right answer
+
+public export
+covering
+query_stdin : IO (Either String String)
+query_stdin = do
+  key_value ← getEnv "OPENAI_API_KEY"
+  case key_value of
+    Nothing => pure (Left "OPENAI_API_KEY is not set")
+    Just api_key =>
+      if not (header_value_safe api_key)
+        then pure (Left "OPENAI_API_KEY is empty or contains an invalid HTTP header character")
+        else do
+          prompt_result ← fRead stdin
+          case prompt_result of
+            Left _ => pure (Left "could not read prompt from stdin")
+            Right prompt =>
+              if prompt == ""
+                then pure (Left "prompt on stdin is empty")
+                else do
+                  url_text ← env_or "OPENAI_RESPONSES_URL" default_responses_url
+                  model ← env_or "OPENAI_MODEL" default_model
+                  case parse_url url_text of
+                    Left problem => pure (Left ("invalid OPENAI_RESPONSES_URL: " ++ problem))
+                    Right target_url => do
+                      let body = responses_request_body model prompt
+                      let wire_headers = request_headers target_url api_key body
+                      pid ← getPID
+                      temp_root ← env_or "TMPDIR" "/tmp"
+                      let prefix = temp_root ++ "/icu-openai-" ++ show pid
+                      let body_path = prefix ++ ".json"
+                      let metadata_path = prefix ++ ".meta"
+                      result ← fetch_raw_to_files target_url wire_headers body
+                        (utf8_byte_length body) body_path metadata_path
+                      metadata_result ← readFile metadata_path
+                      body_result ← readFile body_path
+                      cleanup_files body_path metadata_path
+                      let metadata = case metadata_result of
+                            Left _ => []
+                            Right text => lines text
+                      if result /= 0
+                        then pure (Left (response_problem result metadata))
+                        else case body_result of
+                          Left _ => pure (Left "could not read OpenAI response body")
+                          Right response_body => pure (check_response metadata response_body)
