@@ -56,7 +56,7 @@ jobs:
         env:
           IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
         run: |
-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" -p idric_net tests/HttpTests.idric -o icu-http-tests
           ./build/exec/icu-http-tests
 
       - name: Start deterministic HTTP and HTTPS servers
