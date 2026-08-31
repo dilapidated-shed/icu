@@ -17,7 +17,7 @@ transmit (http_url name destination_port _) wire_head body body_length =
     (prim_send_http
       (host_name_text name)
       (destination_port_number destination_port)
-      (request_head_text wire_head)
+      (http_request_head_text wire_head)
       (http_body_text body)
       (cast (byte_count_value body_length)))
 transmit (https_url name destination_port _) wire_head body body_length =
@@ -25,7 +25,7 @@ transmit (https_url name destination_port _) wire_head body body_length =
     (prim_send_https
       (host_name_text name)
       (destination_port_number destination_port)
-      (request_head_text wire_head)
+      (http_request_head_text wire_head)
       (http_body_text body)
       (cast (byte_count_value body_length)))
 
