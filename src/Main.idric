@@ -1,7 +1,9 @@
 module Main
 
 import Http
+import OpenAI
 import System
+import System.File
 import Transport
 
 
@@ -11,7 +13,8 @@ usage =
   "  icu get  http://host/path\n" ++
   "  icu get  https://host/path\n" ++
   "  icu post http://host/path BODY\n" ++
-  "  icu post https://host/path BODY"
+  "  icu post https://host/path BODY\n" ++
+  "  icu openai < prompt.txt"
 
 parse_command : List String → Either String request
 parse_command ["get", text] =
@@ -26,10 +29,18 @@ parse_command _ = Left usage
 
 fail_with : String → IO ()
 fail_with problem = do
-  putStrLn problem
+  _ ← fPutStrLn stderr problem
   exitFailure
 
+run_openai : IO ()
+run_openai = do
+  outcome ← query_stdin
+  case outcome of
+    Left problem => fail_with problem
+    Right answer => putStr answer
+
 run : List String → IO ()
+run ["openai"] = run_openai
 run arguments =
   case parse_command arguments of
     Left problem => fail_with problem
