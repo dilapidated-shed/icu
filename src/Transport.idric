@@ -1,28 +1,25 @@
 module Transport
 
 import Http
+import NativeTransport
 
-%foreign "C:icu_send_http,libicu_transport"
-prim_send_http : String → Int → String → String → Int → PrimIO Int
-
-%foreign "C:icu_send_https,libicu_transport"
-prim_send_https : String → Int → String → String → Int → PrimIO Int
-
-transmit : url → String → String → Int → IO Int
-transmit (http_url name number _) wire_headers body body_length =
-  primIO (prim_send_http name (cast number) wire_headers body body_length)
-transmit (https_url name number _) wire_headers body body_length =
-  primIO (prim_send_https name (cast number) wire_headers body body_length)
+transmit :
+  url → HttpRequestHead → HttpBody → ByteCount → IO TransportExitStatus
+transmit (http_url name number _) wire_head body body_length =
+  send_plain_http name number wire_head body body_length
+transmit (https_url name number _) wire_head body body_length =
+  send_verified_tls name number wire_head body body_length
 
 public export
-send_request : request → IO (Either String Int)
+send_request : request → IO (Either String TransportExitStatus)
 send_request value =
   case render_request_parts value of
-    (wire_headers, body, body_length) =>
+    MkRenderedRequest wire_head body body_length => do
+      status ← transmit value_url wire_head body body_length
+      pure (Right status)
+  where
+    value_url : url
+    value_url =
       case value of
-        get target_url => do
-          status ← transmit target_url wire_headers body body_length
-          pure (Right status)
-        post target_url _ => do
-          status ← transmit target_url wire_headers body body_length
-          pure (Right status)
+        get target_url => target_url
+        post target_url _ => target_url
