@@ -1,0 +1,5 @@
+# GitHub Linguist: highlight and classify Idriç sources using the Idris grammar.
+*.idric linguist-language=Idris
+
+# Preserved upstream curl tree; reference material, not active ICU implementation.
+old/** linguist-vendored
