@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: isomorphisms/Idric
-          ref: a336dcd004fd1cc68f4cf3645540f6006564d886
+          ref: 7764bb2c04df4525cec0dfc6125d0a607fb6fca5
           path: .tools/Idric
 
       - name: Install build and trace dependencies
