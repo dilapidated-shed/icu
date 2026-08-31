@@ -55,6 +55,63 @@ render_get =
            "User-Agent: icu/0.1\r\n" ++
            "\r\n")
 
+parse_authorization_header : Bool
+parse_authorization_header =
+  case parse_header "Authorization: Bearer example-token" of
+    Right (http_header name value) =>
+      name == "Authorization" && value == "Bearer example-token"
+    Left _ => False
+
+reject_header_value_injection : Bool
+reject_header_value_injection =
+  case make_header "X-Test" "safe\r\nX-Evil: yes" of
+    Left _ => True
+    Right _ => False
+
+reject_framing_header : Bool
+reject_framing_header =
+  case make_header "Content-Length" "999" of
+    Left _ => True
+    Right _ => False
+
+render_custom_get : Bool
+render_custom_get =
+  case parse_url "https://example.com/data" of
+    Left _ => False
+    Right target_url =>
+      case make_header "X-Api-Key" "secret" of
+        Left _ => False
+        Right custom =>
+          render_request_with_headers (get target_url) [custom] ==
+            Right
+              ("GET /data HTTP/1.0\r\n" ++
+               "Host: example.com\r\n" ++
+               "Connection: close\r\n" ++
+               "Accept-Encoding: identity\r\n" ++
+               "User-Agent: icu/0.1\r\n" ++
+               "X-Api-Key: secret\r\n" ++
+               "\r\n")
+
+replace_default_header : Bool
+replace_default_header =
+  case parse_url "https://example.com/message" of
+    Left _ => False
+    Right target_url =>
+      case make_header "Content-Type" "application/json" of
+        Left _ => False
+        Right custom =>
+          render_request_with_headers (post target_url "{}") [custom] ==
+            Right
+              ("POST /message HTTP/1.0\r\n" ++
+               "Host: example.com\r\n" ++
+               "Connection: close\r\n" ++
+               "Accept-Encoding: identity\r\n" ++
+               "User-Agent: icu/0.1\r\n" ++
+               "Content-Type: application/json\r\n" ++
+               "Content-Length: 2\r\n" ++
+               "\r\n" ++
+               "{}")
+
 utf8_lengths : Bool
 utf8_lengths =
   utf8_byte_length "" == 0 &&
@@ -89,6 +146,11 @@ all_pass =
   reject_userinfo &&
   reject_header_injection &&
   render_get &&
+  parse_authorization_header &&
+  reject_header_value_injection &&
+  reject_framing_header &&
+  render_custom_get &&
+  replace_default_header &&
   utf8_lengths &&
   render_utf8_post
 
@@ -100,6 +162,11 @@ main = do
   check "reject URL userinfo" reject_userinfo
   check "reject header injection" reject_header_injection
   check "GET wire form requests identity encoding" render_get
+  check "parse Authorization header" parse_authorization_header
+  check "reject CRLF in caller header value" reject_header_value_injection
+  check "caller cannot override Content-Length" reject_framing_header
+  check "render caller-supplied GET header" render_custom_get
+  check "caller Content-Type replaces the default" replace_default_header
   check "UTF-8 byte lengths" utf8_lengths
   check "POST carries UTF-8 body with byte Content-Length" render_utf8_post
   if all_pass then pure () else exitFailure
