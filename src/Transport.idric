@@ -40,6 +40,11 @@ fetch (https_url name number _) wire_headers body body_length body_path metadata
   primIO (prim_fetch_https name (cast number) wire_headers body body_length body_path metadata_path)
 
 public export
+fetch_raw_to_files : url → String → String → Int → String → String → IO Int
+fetch_raw_to_files target_url wire_headers body body_length body_path metadata_path =
+  fetch target_url wire_headers body body_length body_path metadata_path
+
+public export
 fetch_to_files : request → String → String → IO Int
 fetch_to_files value body_path metadata_path =
   case render_request_parts value of
