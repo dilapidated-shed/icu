@@ -39,6 +39,8 @@ parts of that native transport: status and header parsing, redirect
 classification and resolution, request-target validation, and redirected GET
 rewriting. The live transport still uses the C copies while their equivalence
 boundary is established.
+`src/OpenAI.idric` owns the Responses API request JSON, authentication header,
+response extraction, and fresh-chat command behavior.
 `src/Main.idric` owns the tiny command-line grammar.
 
 The C boundary independently refuses wire requests that do not begin with GET
@@ -60,6 +62,41 @@ transport writes request headers and body separately using that explicit body
 length. Response headers are bounded to 64 KiB. The status line and `Location`
 are parsed before the final response body is streamed byte-for-byte to stdout;
 other response headers remain internal for now.
+
+### OpenAI Responses API
+
+`icu openai` is the real fresh-request command intended for the Blackball A/B
+runner. The prompt is the complete UTF-8 stdin stream. A successful invocation
+writes only the first `output_text` answer to stdout; diagnostics and failures go
+to stderr and return nonzero.
+
+```sh
+printf 'Explain the employment evidence for this degree.\n' | \
+  OPENAI_API_KEY="$OPENAI_API_KEY" \
+  ./build/exec/icu openai
+```
+
+The default endpoint is `https://api.openai.com/v1/responses` and the default
+model is `gpt-5.6-sol`. `OPENAI_RESPONSES_URL` and `OPENAI_MODEL` can override
+those values for a pinned experiment or deterministic local fixture.
+
+Every invocation creates one Responses API request with no conversation ID or
+`previous_response_id`; the request also sets `store` to false. No tool list is
+supplied. The API key is read only from `OPENAI_API_KEY`, rejected if it cannot
+safely form one HTTP header value, and is never written to stdout, stderr, the
+response files, or reproducibility metadata.
+
+This is intentionally dogfooded through ICU. The OpenAI-specific code is Idriç
+and calls ICU's existing checked file-backed transport seam. It does not invoke
+curl, Python, an OpenAI SDK, or another HTTP client. The current sockets/TLS
+owner remains the already-declared `native/transport.c` C/OpenSSL boundary; this
+change does not mislabel that older boundary as one-language transport.
+
+The JSON work is also local: Idriç escapes the prompt/model request strings and
+extracts an `output_text` string from the returned Responses JSON, including
+standard JSON escapes and Unicode surrogate pairs. Temporary response and
+metadata files are namespaced by process ID under `TMPDIR` (default `/tmp`) and
+removed before the command returns.
 
 ### Redirects
 
@@ -87,7 +124,7 @@ icu get https://example.com/cover.jpg > cover.jpg
 
 Current intentional limits:
 
-- no proxies, cookies, authentication helpers, or custom methods
+- no proxies, cookies, authentication helpers outside the narrow OpenAI command, or custom methods
 - no compressed-response decoder; requests currently ask servers for identity encoding
 - POST redirects are not followed
 - no FTP, SMTP, file URLs, or other curl protocols

@@ -1,0 +1,184 @@
+name: OpenAI Responses client
+
+on:
+  pull_request:
+    paths:
+      - 'src/OpenAI.idric'
+      - 'src/Main.idric'
+      - 'src/Transport.idric'
+      - 'icu.ipkg'
+      - 'tests/OpenAITests.idric'
+      - '.github/workflows/openai-responses-client.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  openai-client:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout ICU
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Checkout Idric compiler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric
+          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          path: .tools/Idric
+
+      - name: Install build and trace dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends chezscheme libssl-dev strace
+
+      - name: Build Idric and ICU
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+          make check-native
+          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" \
+            tests/OpenAITests.idric -o icu-openai-tests
+          ./build/exec/icu-openai-tests
+
+      - name: Start deterministic Responses-shaped server
+        run: |
+          cat > "$RUNNER_TEMP/openai-mock.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          import json
+
+          EXPECTED_PROMPT = "hello\nsecond line\n"
+
+          class Handler(BaseHTTPRequestHandler):
+              protocol_version = "HTTP/1.0"
+
+              def log_message(self, format, *args):
+                  pass
+
+              def send_json(self, status, value):
+                  body = json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+                  self.send_response(status)
+                  self.send_header("Content-Type", "application/json; charset=utf-8")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def do_POST(self):
+                  length = int(self.headers.get("Content-Length", "0"))
+                  raw = self.rfile.read(length)
+                  if self.path == "/v1/error":
+                      self.send_json(401, {"error": {"message": "synthetic auth failure"}})
+                      return
+                  if self.path != "/v1/responses":
+                      self.send_json(404, {"error": {"message": "not found"}})
+                      return
+                  try:
+                      request = json.loads(raw.decode("utf-8"))
+                  except Exception as exc:
+                      self.send_json(400, {"error": {"message": str(exc)}})
+                      return
+                  if self.headers.get("Authorization") != "Bearer test-key":
+                      self.send_json(401, {"error": {"message": "bad authorization"}})
+                      return
+                  if self.headers.get("Content-Type") != "application/json":
+                      self.send_json(400, {"error": {"message": "bad content type"}})
+                      return
+                  if request != {
+                      "model": "test-model",
+                      "input": EXPECTED_PROMPT,
+                      "store": False,
+                  }:
+                      self.send_json(400, {"error": {"message": "wrong request body"}})
+                      return
+                  self.send_json(
+                      200,
+                      {
+                          "id": "resp_mock",
+                          "object": "response",
+                          "status": "completed",
+                          "output": [
+                              {
+                                  "id": "msg_mock",
+                                  "type": "message",
+                                  "status": "completed",
+                                  "role": "assistant",
+                                  "content": [
+                                      {
+                                          "type": "output_text",
+                                          "annotations": [],
+                                          "text": 'mock answer\nline 2 "quoted" ☃ 😀',
+                                      }
+                                  ],
+                              }
+                          ],
+                      },
+                  )
+
+          ThreadingHTTPServer(("127.0.0.1", 18082), Handler).serve_forever()
+          PY
+          python3 "$RUNNER_TEMP/openai-mock.py" > "$RUNNER_TEMP/openai-mock.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/openai-mock.pid"
+          sleep 1
+
+      - name: Prove the real command boundary through ICU transport
+        run: |
+          printf 'hello\nsecond line\n' > "$RUNNER_TEMP/prompt.txt"
+          printf 'mock answer\nline 2 "quoted" ☃ 😀' > "$RUNNER_TEMP/expected.txt"
+
+          OPENAI_API_KEY=test-key \
+          OPENAI_MODEL=test-model \
+          OPENAI_RESPONSES_URL=http://127.0.0.1:18082/v1/responses \
+          strace -f -qq -e trace=execve -o "$RUNNER_TEMP/openai.execve" \
+            ./build/exec/icu openai \
+            < "$RUNNER_TEMP/prompt.txt" \
+            > "$RUNNER_TEMP/answer.txt" \
+            2> "$RUNNER_TEMP/client.err"
+
+          cmp "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/answer.txt"
+          test ! -s "$RUNNER_TEMP/client.err"
+          if grep -Eiq 'curl|python|openai[-_]?sdk' "$RUNNER_TEMP/openai.execve"; then
+            echo 'OpenAI client escaped the ICU executable boundary' >&2
+            cat "$RUNNER_TEMP/openai.execve" >&2
+            exit 1
+          fi
+
+      - name: Preserve API and local failure as non-answers
+        run: |
+          : > "$RUNNER_TEMP/failure.out"
+          : > "$RUNNER_TEMP/failure.err"
+          if OPENAI_API_KEY=test-key \
+              OPENAI_MODEL=test-model \
+              OPENAI_RESPONSES_URL=http://127.0.0.1:18082/v1/error \
+              ./build/exec/icu openai \
+              < "$RUNNER_TEMP/prompt.txt" \
+              > "$RUNNER_TEMP/failure.out" \
+              2> "$RUNNER_TEMP/failure.err"; then
+            echo 'HTTP failure produced a successful answer' >&2
+            exit 1
+          fi
+          test ! -s "$RUNNER_TEMP/failure.out"
+          grep -F 'http_status=401' "$RUNNER_TEMP/failure.err"
+          if grep -F 'test-key' "$RUNNER_TEMP/failure.err"; then
+            echo 'API key leaked to diagnostics' >&2
+            exit 1
+          fi
+
+          : > "$RUNNER_TEMP/no-key.out"
+          : > "$RUNNER_TEMP/no-key.err"
+          if env -u OPENAI_API_KEY \
+              ./build/exec/icu openai \
+              < "$RUNNER_TEMP/prompt.txt" \
+              > "$RUNNER_TEMP/no-key.out" \
+              2> "$RUNNER_TEMP/no-key.err"; then
+            echo 'missing API key unexpectedly succeeded' >&2
+            exit 1
+          fi
+          test ! -s "$RUNNER_TEMP/no-key.out"
+          grep -F 'OPENAI_API_KEY is not set' "$RUNNER_TEMP/no-key.err"
+
+      - name: Show mock log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/openai-mock.log" 2>/dev/null || true
