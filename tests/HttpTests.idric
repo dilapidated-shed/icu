@@ -74,7 +74,7 @@ render_utf8_post =
     Right target_url =>
       case render_request_parts (post target_url (MkHttpBody "café")) of
         MkRenderedRequest wire_head body body_length =>
-          request_head_text wire_head ==
+          http_request_head_text wire_head ==
             ("POST /message HTTP/1.0\r\n" ++
              "Host: example.com\r\n" ++
              "Connection: close\r\n" ++
