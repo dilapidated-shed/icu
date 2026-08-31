@@ -20,25 +20,68 @@ Exactly two requests are represented:
 Unsupported protocols and methods are absent from the request model rather than
 stored as strings and rejected much later.
 
+The active Idriç surface also keeps protocol values distinct instead of
+collapsing everything to `String` and `Int`:
+
 ```idris
+record HostName where
+  constructor MkHostName
+  host_name_text : String
+
+record Port where
+  constructor MkPort
+  bits : Bits16
+
+record RequestTarget where
+  constructor MkRequestTarget
+  request_target_text : String
+
+record HttpHeader where
+  constructor MkHttpHeader
+  header_name : String
+  header_value : String
+
+record HttpBody where
+  constructor MkHttpBody
+  http_body_text : String
+
+record ByteCount where
+  constructor MkByteCount
+  byte_count_value : ℕ
+
 choice url one_of
-  http_url String Nat String
-  https_url String Nat String
+  http_url HostName Port RequestTarget
+  https_url HostName Port RequestTarget
 
 choice request one_of
   get url
-  post url String
+  post url HttpBody
 ```
 
-`src/Http.idric` owns URL parsing and HTTP request rendering.
-`src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
+`Port` is bounded by representation to the unsigned 16-bit range. The URL
+parser continues to accept destination ports 1 through 65535. Ordinary natural
+numbers use the Idriç spelling `ℕ` rather than upstream `Nat`.
+
+`HttpHeader`, `HostName`, `RequestTarget`, and `HttpBody` are deliberately only
+nominal distinctions in this first step. Their constructors do not yet claim
+that every wrapped string satisfies the complete HTTP grammar. That later
+constraint work can now happen at the constructor boundary without changing all
+call sites again.
+
+`src/Http.idric` owns URL parsing, typed HTTP values, and request rendering.
+`src/NativeTransport.idric` is the narrow ABI projection where those values are
+unwrapped to the primitive `String`/`Int` types required by the C FFI.
+`src/Transport.idric` chooses plain TCP or verified TLS without exposing that
+primitive chain to ordinary Idriç code.
 `native/transport.c` owns sockets, OpenSSL, response framing, and the small
-amount of response-header handling needed to keep GET useful on the web.
+amount of response-header handling needed to keep GET useful on the web. Its
+native side already has separate `connection`, `response_head`, and `endpoint`
+structures.
 `src/Main.idric` owns the tiny command-line grammar.
 
 The C boundary independently refuses wire requests that do not begin with GET
 or POST. There is no protocol registry or generic method string in the active
-Edriç model.
+Idriç model.
 
 ## Commands
 
@@ -50,9 +93,9 @@ icu post https://example.com/message hello
 The transport uses HTTP/1.0 plus `Connection: close`. Requests advertise
 `Accept-Encoding: identity`, so HTML and image bodies can be consumed directly
 without first adding gzip/brotli decoding. POST text is encoded as UTF-8:
-Idriç computes `Content-Length` from the encoded byte count, then the native
-transport writes request headers and body separately using that explicit body
-length. Response headers are bounded to 64 KiB. The status line and `Location`
+Idriç computes `Content-Length` as a `ByteCount`, then the native transport
+writes the typed request head and body separately after the ABI layer unwraps
+them. Response headers are bounded to 64 KiB. The status line and `Location`
 are parsed before the final response body is streamed byte-for-byte to stdout;
 other response headers remain internal for now.
 
@@ -91,7 +134,7 @@ Current intentional limits:
 
 ## Build
 
-Requirements: the Edriç/Idriç compiler fork, a C11 compiler, and OpenSSL.
+Requirements: the Idriç compiler fork, a C11 compiler, and OpenSSL.
 
 ```sh
 make IDRIC=/opt/Idric/build/exec/idris2
@@ -106,7 +149,8 @@ repo-local transport library:
 ```
 
 `make check-native` compiles the native boundary with warnings promoted to
-errors.
+errors. `make check-idric-vocabulary` rejects bare upstream `Nat` from active
+Idriç source, tests, and this README.
 
 ## Reference source
 
