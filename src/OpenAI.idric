@@ -15,15 +15,6 @@ public export
 default_model : String
 default_model = "gpt-5.6-sol"
 
-header_value_safe_chars : List Char → Bool
-header_value_safe_chars [] = True
-header_value_safe_chars (value :: rest) =
-  ord value >= 32 && ord value < 127 && value /= '\r' && value /= '\n' &&
-  header_value_safe_chars rest
-
-header_value_safe : String → Bool
-header_value_safe value = value /= "" && header_value_safe_chars (unpack value)
-
 hex_digit : Int → Char
 hex_digit value =
   if value < 10
@@ -203,17 +194,19 @@ extract_answer_text response =
     Just text => Just text
     Nothing => extract_refusal response
 
-request_headers : url → String → String → String
-request_headers target_url api_key body =
-  "POST " ++ target target_url ++ " HTTP/1.0\r\n" ++
-  "Host: " ++ authority target_url ++ "\r\n" ++
-  "Connection: close\r\n" ++
-  "Accept-Encoding: identity\r\n" ++
-  "User-Agent: icu/0.1 openai-responses\r\n" ++
-  "Authorization: Bearer " ++ api_key ++ "\r\n" ++
-  "Content-Type: application/json\r\n" ++
-  "Content-Length: " ++ show (utf8_byte_length body) ++ "\r\n" ++
-  "\r\n"
+openai_headers : String → Either String (List request_header)
+openai_headers api_key =
+  if api_key == ""
+    then Left "OPENAI_API_KEY is empty"
+    else case make_header "Authorization" ("Bearer " ++ api_key) of
+      Left _ => Left "OPENAI_API_KEY contains an invalid HTTP header character"
+      Right authorization =>
+        case make_header "Content-Type" "application/json" of
+          Left problem => Left problem
+          Right content_type =>
+            case make_header "User-Agent" "icu/0.1 openai-responses" of
+              Left problem => Left problem
+              Right user_agent => Right [authorization, content_type, user_agent]
 
 env_or : String → String → IO String
 env_or name fallback = do
@@ -262,27 +255,32 @@ check_response metadata body =
             Just answer => Right answer
 
 run_target : String → String → String → url → IO (Either String String)
-run_target api_key model prompt target_url = do
-  let body = responses_request_body model prompt
-  let wire_headers = request_headers target_url api_key body
-  pid ← getPID
-  temp_root ← env_or "TMPDIR" "/tmp"
-  let prefix = temp_root ++ "/icu-openai-" ++ show pid
-  let body_path = prefix ++ ".json"
-  let metadata_path = prefix ++ ".meta"
-  result ← fetch_raw_to_files target_url wire_headers body
-    (utf8_byte_length body) body_path metadata_path
-  metadata_result ← readFile metadata_path
-  body_result ← readFile body_path
-  cleanup_files body_path metadata_path
-  let metadata = case metadata_result of
-        Left _ => []
-        Right text => lines text
-  if result /= 0
-    then pure (Left (response_problem result metadata))
-    else case body_result of
-      Left _ => pure (Left "could not read OpenAI response body")
-      Right response_body => pure (check_response metadata response_body)
+run_target api_key model prompt target_url =
+  case openai_headers api_key of
+    Left problem => pure (Left problem)
+    Right headers => do
+      let body = responses_request_body model prompt
+      pid ← getPID
+      temp_root ← env_or "TMPDIR" "/tmp"
+      let prefix = temp_root ++ "/icu-openai-" ++ show pid
+      let body_path = prefix ++ ".json"
+      let metadata_path = prefix ++ ".meta"
+      fetch_result ← fetch_to_files_with_headers
+        (post target_url body) headers body_path metadata_path
+      case fetch_result of
+        Left problem => pure (Left problem)
+        Right result => do
+          metadata_result ← readFile metadata_path
+          body_result ← readFile body_path
+          cleanup_files body_path metadata_path
+          let metadata = case metadata_result of
+                Left _ => []
+                Right text => lines text
+          if result /= 0
+            then pure (Left (response_problem result metadata))
+            else case body_result of
+              Left _ => pure (Left "could not read OpenAI response body")
+              Right response_body => pure (check_response metadata response_body)
 
 query_prompt : String → String → IO (Either String String)
 query_prompt api_key prompt = do
@@ -299,14 +297,12 @@ query_stdin = do
   key_value ← getEnv "OPENAI_API_KEY"
   case key_value of
     Nothing => pure (Left "OPENAI_API_KEY is not set")
-    Just api_key =>
-      if not (header_value_safe api_key)
-        then pure (Left "OPENAI_API_KEY is empty or contains an invalid HTTP header character")
-        else do
-          prompt_result ← fRead stdin
-          case prompt_result of
-            Left _ => pure (Left "could not read prompt from stdin")
-            Right prompt =>
-              if prompt == ""
-                then pure (Left "prompt on stdin is empty")
-                else query_prompt api_key prompt
+    Just "" => pure (Left "OPENAI_API_KEY is empty")
+    Just api_key => do
+      prompt_result ← fRead stdin
+      case prompt_result of
+        Left _ => pure (Left "could not read prompt from stdin")
+        Right prompt =>
+          if prompt == ""
+            then pure (Left "prompt on stdin is empty")
+            else query_prompt api_key prompt
