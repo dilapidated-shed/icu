@@ -100,11 +100,13 @@ supplied. The API key is read only from `OPENAI_API_KEY`, rejected if it cannot
 safely form one HTTP header value, and is never written to stdout, stderr, the
 response files, or reproducibility metadata.
 
-This is intentionally dogfooded through ICU. The OpenAI-specific code is Idriç
-and calls ICU's existing checked file-backed transport seam. It does not invoke
-curl, Python, an OpenAI SDK, or another HTTP client. The current sockets/TLS
-owner remains the already-declared `native/transport.c` C/OpenSSL boundary; this
-change does not mislabel that older boundary as one-language transport.
+This is intentionally dogfooded through ICU. The OpenAI-specific code is Idriç,
+constructs its Authorization, JSON Content-Type, and User-Agent through the same
+checked `request_header` values exposed to other ICU callers, and uses the
+generic file-backed ICU transport path. It does not invoke curl, Python, an
+OpenAI SDK, or another HTTP client. The current sockets/TLS owner remains the
+already-declared `native/transport.c` C/OpenSSL boundary; this change does not
+mislabel that older boundary as one-language transport.
 
 The JSON work is also local: Idriç escapes the prompt/model request strings and
 extracts an `output_text` string from the returned Responses JSON, including
@@ -123,16 +125,16 @@ Supported `Location` forms are:
 - ordinary relative paths;
 - query-only redirects.
 
-Fragments are removed before the redirected request. Redirected GET preserves
-the original request headers except that the request target and `Host` header
-are rewritten for the new endpoint. Cross-scheme redirects reselect plain TCP
-or verified TLS from the destination. This inherited redirect behavior means a
-caller-supplied credential header on GET is also preserved today; unlike the old
-curl `--header` behavior, ICU has not yet restored curl's cross-origin
-`Authorization`/`Cookie` stripping. Do not use credential-bearing GET headers on
-requests that may cross origins until that policy is implemented. POST redirects
-are deliberately not followed yet because 301/302/303 method rewriting needs an
-explicit Idriç policy.
+Fragments are removed before the redirected request. Redirected GET rewrites the
+request target and `Host` header for the new endpoint. Other headers are
+preserved on same-origin redirects. On a change of scheme, host, or port,
+`Authorization` and `Cookie` are stripped before the next request, matching the
+specific credential rule documented by the preserved curl `--header` source;
+other caller headers remain present. A caller using another secret-bearing header
+name such as `X-Api-Key` should therefore avoid an untrusted cross-origin redirect.
+Cross-scheme redirects reselect plain TCP or verified TLS from the destination.
+POST redirects are deliberately not followed yet because 301/302/303 method
+rewriting needs an explicit Idriç policy.
 
 Response bodies are binary-safe: an image can be fetched directly to a file,
 for example:
@@ -143,9 +145,8 @@ icu get https://example.com/cover.jpg > cover.jpg
 
 Current intentional limits:
 
-- no proxies, cookies, authentication helper layer, or custom methods
+- no proxies, cookie jar, authentication helper layer, or custom methods
 - custom header files (`-H @file`) are not supported
-- cross-origin redirect stripping for caller credentials is not implemented yet
 - no compressed-response decoder; requests normally ask servers for identity encoding
 - POST redirects are not followed
 - no FTP, SMTP, file URLs, or other curl protocols
@@ -189,7 +190,7 @@ repo-local transport library:
 ```
 
 `make check-native` compiles the native boundary with warnings promoted to
-errors.
+errors and runs the redirect credential-policy checks.
 
 `make check-transport-model` runs every case in
 `tests/transport-fixtures.json` through a C oracle built directly from
