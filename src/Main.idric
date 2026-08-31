@@ -24,7 +24,7 @@ parse_command ["get", text] =
 parse_command ["post", text, body] =
   case parse_url text of
     Left problem => Left problem
-    Right target_url => Right (post target_url (MkHttpBody body))
+    Right target_url => Right (post target_url (http_body_from_string body))
 parse_command _ = Left usage
 
 fail_with : String → IO ()
