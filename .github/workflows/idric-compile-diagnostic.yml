@@ -1,0 +1,59 @@
+name: Idric compile diagnostic
+
+on:
+  push:
+    branches:
+      - use-idric-net
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compile-diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ICU
+        uses: actions/checkout@v4
+
+      - name: Checkout Idric compiler
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric
+          ref: 47557b43053c829d4f8aa1581007002b57f9c59f
+          path: .tools/Idric
+
+      - name: Checkout Idric-Net
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric-Net
+          ref: 3e7643c8d8dd2a940d5b6dc96403ddae765402cd
+          path: .tools/Idric-Net
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chezscheme libssl-dev
+
+      - name: Build Idric compiler
+        run: make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+
+      - name: Install Idric-Net
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          cd "$GITHUB_WORKSPACE/.tools/Idric-Net"
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --install idric-net.ipkg
+
+      - name: Compile ICU and capture diagnostic
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          set -o pipefail
+          make check-native 2>&1 | tee icu-compile.log
+          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" 2>&1 | tee -a icu-compile.log
+
+      - name: Upload compiler diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icu-compile-diagnostic
+          path: icu-compile.log
