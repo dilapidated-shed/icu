@@ -178,3 +178,139 @@ jobs:
       - name: Show server log on failure
         if: failure()
         run: cat "$RUNNER_TEMP/icu-server.log" 2>/dev/null || true
+
+  hostile-ingestion-receipts:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout ICU
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Checkout Idric compiler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric
+          ref: 47557b43053c829d4f8aa1581007002b57f9c59f
+          path: .tools/Idric
+
+      - name: Checkout canonical hostile-input corpus
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/ai-ci
+          ref: c1e423d506f6adfc8c1c9659a4faaf94ae84eaf0
+          path: .tools/ai-ci
+
+      - name: Checkout Idric-Net
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric-Net
+          ref: 3e7643c8d8dd2a940d5b6dc96403ddae765402cd
+          path: .tools/Idric-Net
+
+      - name: Install compiler, trace, TLS, and oracle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            chezscheme libssl-dev libxml2-utils strace
+
+      - name: Build Idric compiler and ICU ingestion executable
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+          (cd "$GITHUB_WORKSPACE/.tools/Idric-Net" && \
+            "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --install idric-net.ipkg)
+          make check-native
+          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" \
+            -p idric_net tests/IngestionReceipt.idric -o icu-ingestion
+          test -x build/exec/icu-ingestion
+          test -f build/exec/icu-ingestion_app/icu-ingestion.so
+
+      - name: Compile independent receipt verifier and fixture server
+        run: |
+          cc -std=c17 -Wall -Wextra -Werror -pedantic -O2 \
+            -o "$RUNNER_TEMP/aici-ingestion" \
+            .tools/ai-ci/ingestion/src/aici_ingestion.c
+          cc -std=c17 -Wall -Wextra -Werror -pedantic -O2 \
+            -o "$RUNNER_TEMP/aici-ingestion-server" \
+            .tools/ai-ci/ingestion/src/fixture_server.c
+          (cd .tools/ai-ci/ingestion/corpus-v1 && sha256sum -c CORPUS.sha256)
+
+      - name: Run Idric candidate and external oracle separately
+        run: |
+          receipt_root="$RUNNER_TEMP/hostile-ingestion-receipts"
+          mkdir -p "$receipt_root"
+          "$RUNNER_TEMP/aici-ingestion-server" 18099 \
+            .tools/ai-ci/ingestion/corpus-v1 \
+            >"$receipt_root/server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT HUP INT TERM
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            grep -q READY "$receipt_root/server.log" 2>/dev/null && break
+            sleep 0.1
+          done
+
+          corpus_revision=$(sed -n '1p' .tools/ai-ci/ingestion/corpus-v1/REVISION)
+          corpus_repository_revision=c1e423d506f6adfc8c1c9659a4faaf94ae84eaf0
+          implementation_revision=$(git rev-parse HEAD)
+          executable_sha256=$(sha256sum \
+            build/exec/icu-ingestion_app/icu-ingestion.so | cut -d ' ' -f1)
+          oracle_revision="version:$(curl --version | sed -n '1s/[[:space:]]/_/gp')"
+
+          for specification in \
+              'valid_utf8 /valid http' \
+              'malformed_html /malformed http' \
+              'empty_success /empty http' \
+              'redirect_utf8 /redirect http' \
+              'truncated_body /truncated http' \
+              'invalid_utf8 /invalid-utf8 http' \
+              'unknown_charset /unknown-charset http' \
+              'truncated_gzip /gzip-truncated http' \
+              'not_found /not-found http' \
+              'tls_plaintext / https'; do
+            set -- $specification
+            fixture=$1
+            path=$2
+            scheme=$3
+            url="$scheme://127.0.0.1:18099$path"
+
+            strace -f -qq -e trace=execve \
+              -o "$receipt_root/$fixture.execve" \
+              ./build/exec/icu-ingestion \
+                "$url" "$fixture" "$corpus_revision" \
+                "$corpus_repository_revision" "$implementation_revision" \
+                "$executable_sha256" "$receipt_root/$fixture.body" \
+                "$receipt_root/$fixture.meta" \
+              >"$receipt_root/$fixture.candidate.tsv"
+
+            sh .tools/ai-ci/ingestion/oracle/run_curl_libxml2.sh \
+              .tools/ai-ci/ingestion/corpus-v1 \
+              http://127.0.0.1:18099 "$fixture" \
+              "$corpus_repository_revision" "$oracle_revision" \
+              "$receipt_root/$fixture.oracle.tsv"
+
+            "$RUNNER_TEMP/aici-ingestion" compare \
+              .tools/ai-ci/ingestion/corpus-v1 \
+              "$receipt_root/$fixture.candidate.tsv" \
+              "$receipt_root/$fixture.execve" \
+              "$receipt_root/$fixture.oracle.tsv"
+          done
+
+          kill "$server_pid"
+          wait "$server_pid" || true
+          trap - EXIT HUP INT TERM
+
+      - name: Exercise the pinned reusable AICI action
+        uses: isomorphisms/ai-ci/ingestion@c1e423d506f6adfc8c1c9659a4faaf94ae84eaf0
+        with:
+          receipt: ${{ runner.temp }}/hostile-ingestion-receipts/valid_utf8.candidate.tsv
+          role: implementation-under-test
+          exec_trace: ${{ runner.temp }}/hostile-ingestion-receipts/valid_utf8.execve
+          oracle_receipt: ${{ runner.temp }}/hostile-ingestion-receipts/valid_utf8.oracle.tsv
+
+      - name: Retain candidate, oracle, trace, and first-boundary receipts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hostile-ingestion-receipts
+          path: ${{ runner.temp }}/hostile-ingestion-receipts
+          if-no-files-found: error

@@ -95,6 +95,26 @@ Current intentional limits:
 - URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
 - URL userinfo and IPv6 literals are not supported yet
 
+## Checked hostile-input boundary
+
+The `hostile-ingestion-receipts` CI job pins the canonical corpus and verifier
+from `isomorphisms/ai-ci` at an exact commit. It runs all ten inputs through two
+separate paths:
+
+- the implementation under test: an Idriç receipt emitter using ICU's current
+  native C/OpenSSL transport boundary and an Idriç `document_log_subset_v0`;
+- the oracle: curl, gzip, iconv, and libxml2.
+
+The candidate is traced at `execve`. AICI rejects the receipt if that trace
+invokes the oracle, if candidate metadata claims an oracle identity or fallback,
+or if any later stage reports success after the first real failure.
+
+This is not yet a one-language completion claim. The receipt names
+`idric+icu-native-c` wherever the current transport or raw-byte validation still
+crosses the native boundary. It also marks gzip as the first unimplemented
+candidate boundary and calls the document representation a subset log rather
+than a browser DOM.
+
 ## Build
 
 Requirements: the Edriç/Idriç compiler fork, an installed `idric_net` package,

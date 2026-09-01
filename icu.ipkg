@@ -4,6 +4,6 @@ version = 0.1.0
 depends = idric_net
 sourcedir = "src"
 
-modules = Transport, Main
+modules = Transport, Ingestion, Main
 main = Main
 executable = icu

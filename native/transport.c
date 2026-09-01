@@ -28,6 +28,9 @@ typedef struct {
     int status;
     int has_location;
     char location[MAX_LOCATION_BYTES];
+    long long content_length;
+    char content_type[256];
+    char content_encoding[64];
 } response_head;
 
 typedef struct {
@@ -221,8 +224,8 @@ static char *find_header_end(char *bytes, size_t length) {
     return NULL;
 }
 
-static int write_stdout(const char *bytes, size_t length) {
-    return fwrite(bytes, 1, length, stdout) == length;
+static int write_output(FILE *output, const char *bytes, size_t length) {
+    return fwrite(bytes, 1, length, output) == length;
 }
 
 static int parse_status(const char *headers, size_t length) {
@@ -289,6 +292,17 @@ static int copy_header_value(const char *headers, size_t header_length,
     return 0;
 }
 
+static long long parse_content_length(const char *text) {
+    if (text[0] == '\0') return -1;
+    long long value = 0;
+    for (const unsigned char *cursor = (const unsigned char *)text; *cursor != '\0'; ++cursor) {
+        if (!isdigit(*cursor)) return -1;
+        if (value > 1073741824LL) return -1;
+        value = value * 10 + (*cursor - '0');
+    }
+    return value;
+}
+
 static int read_response_head(connection *connection, response_head *head,
                               char *body_prefix, size_t body_capacity,
                               size_t *body_length) {
@@ -298,6 +312,8 @@ static int read_response_head(connection *connection, response_head *head,
 
     *body_length = 0;
     memset(head, 0, sizeof(*head));
+    head->content_length = -1;
+    strcpy(head->content_encoding, "identity");
 
     while (header_bytes < MAX_HEADER_BYTES) {
         ssize_t amount = read_some(connection, buffer, sizeof(buffer));
@@ -325,6 +341,15 @@ static int read_response_head(connection *connection, response_head *head,
             }
             head->has_location = copy_header_value(
                 headers, head_length, "Location", head->location, sizeof(head->location));
+            char length_text[32];
+            if (copy_header_value(headers, head_length, "Content-Length",
+                                  length_text, sizeof(length_text))) {
+                head->content_length = parse_content_length(length_text);
+            }
+            (void)copy_header_value(headers, head_length, "Content-Type",
+                                    head->content_type, sizeof(head->content_type));
+            (void)copy_header_value(headers, head_length, "Content-Encoding",
+                                    head->content_encoding, sizeof(head->content_encoding));
 
             size_t available_body = header_bytes - head_length;
             if (available_body > body_capacity) {
@@ -343,22 +368,131 @@ static int read_response_head(connection *connection, response_head *head,
     return 0;
 }
 
-static int copy_remaining_body(connection *connection, const char *prefix, size_t prefix_length) {
+static int copy_remaining_body(connection *connection, FILE *output,
+                               const char *prefix, size_t prefix_length,
+                               size_t *received_length) {
     char buffer[16384];
-    if (prefix_length != 0 && !write_stdout(prefix, prefix_length)) {
+    *received_length = 0;
+    if (prefix_length != 0 && !write_output(output, prefix, prefix_length)) {
         complain("could not write response body");
         return 0;
     }
+    *received_length = prefix_length;
     for (;;) {
         ssize_t amount = read_some(connection, buffer, sizeof(buffer));
         if (amount == 0) {
-            return fflush(stdout) == 0;
+            return fflush(output) == 0;
         }
-        if (amount < 0 || !write_stdout(buffer, (size_t)amount)) {
+        if (amount < 0 || !write_output(output, buffer, (size_t)amount)) {
             complain(amount < 0 ? "response read failed" : "could not write response body");
             return 0;
         }
+        *received_length += (size_t)amount;
     }
+}
+
+static int continuation(unsigned char byte) {
+    return byte >= 0x80u && byte <= 0xbfu;
+}
+
+static int valid_utf8_bytes(const unsigned char *bytes, size_t length) {
+    size_t index = 0;
+    while (index < length) {
+        unsigned char first = bytes[index++];
+        if (first <= 0x7fu) continue;
+        if (first >= 0xc2u && first <= 0xdfu) {
+            if (index >= length || !continuation(bytes[index++])) return 0;
+            continue;
+        }
+        if (first >= 0xe0u && first <= 0xefu) {
+            if (index + 1u >= length) return 0;
+            unsigned char second = bytes[index++];
+            unsigned char third = bytes[index++];
+            if (!continuation(third)) return 0;
+            if (first == 0xe0u) {
+                if (second < 0xa0u || second > 0xbfu) return 0;
+            } else if (first == 0xedu) {
+                if (second < 0x80u || second > 0x9fu) return 0;
+            } else if (!continuation(second)) {
+                return 0;
+            }
+            continue;
+        }
+        if (first >= 0xf0u && first <= 0xf4u) {
+            if (index + 2u >= length) return 0;
+            unsigned char second = bytes[index++];
+            unsigned char third = bytes[index++];
+            unsigned char fourth = bytes[index++];
+            if (!continuation(third) || !continuation(fourth)) return 0;
+            if (first == 0xf0u) {
+                if (second < 0x90u || second > 0xbfu) return 0;
+            } else if (first == 0xf4u) {
+                if (second < 0x80u || second > 0x8fu) return 0;
+            } else if (!continuation(second)) {
+                return 0;
+            }
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static int valid_utf8_file(const char *path) {
+    if (path == NULL) return -1;
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) return -1;
+    unsigned char buffer[16384];
+    unsigned char *all = NULL;
+    size_t used = 0;
+    for (;;) {
+        size_t amount = fread(buffer, 1, sizeof(buffer), file);
+        if (amount != 0) {
+            unsigned char *grown = realloc(all, used + amount);
+            if (grown == NULL) {
+                free(all);
+                fclose(file);
+                return -1;
+            }
+            all = grown;
+            memcpy(all + used, buffer, amount);
+            used += amount;
+        }
+        if (amount < sizeof(buffer)) {
+            if (ferror(file)) {
+                free(all);
+                fclose(file);
+                return -1;
+            }
+            break;
+        }
+    }
+    fclose(file);
+    int valid = valid_utf8_bytes(all, used);
+    free(all);
+    return valid;
+}
+
+static int write_response_metadata(const char *path, const response_head *head,
+                                   size_t received_length, const char *body_path) {
+    if (path == NULL) return 1;
+    FILE *file = fopen(path, "w");
+    if (file == NULL) return 0;
+    int ok = fprintf(file,
+        "http_status\t%d\n"
+        "content_type\t%s\n"
+        "content_encoding\t%s\n"
+        "declared_length\t%lld\n"
+        "received_length\t%zu\n"
+        "utf8\t%s\n",
+        head->status,
+        head->content_type[0] == '\0' ? "unknown" : head->content_type,
+        head->content_encoding[0] == '\0' ? "identity" : head->content_encoding,
+        head->content_length,
+        received_length,
+        valid_utf8_file(body_path) == 1 ? "valid" : "invalid") > 0;
+    if (fclose(file) != 0) ok = 0;
+    return ok;
 }
 
 static int redirect_status(int status) {
@@ -660,7 +794,8 @@ static int one_request(const endpoint *target, const char *request_headers,
 }
 
 static int send_request(const char *host, int port, const char *request_headers,
-                        const char *request_body, int request_body_length, int use_tls) {
+                        const char *request_body, int request_body_length, int use_tls,
+                        const char *body_output_path, const char *metadata_output_path) {
     if (request_body_length < 0 || (request_body_length != 0 && request_body == NULL)) {
         complain("invalid request body length");
         return 2;
@@ -713,10 +848,33 @@ static int send_request(const char *host, int port, const char *request_headers,
         int can_follow = strncmp(current_request, "GET ", 4) == 0 &&
                          redirect_status(head.status) && head.has_location;
         if (!can_follow) {
-            int copied = copy_remaining_body(&opened, body_prefix, response_body_length);
+            FILE *output = stdout;
+            if (body_output_path != NULL) {
+                output = fopen(body_output_path, "wb");
+                if (output == NULL) {
+                    close_connection(&opened);
+                    free(current_request);
+                    complain("could not open response body output");
+                    return 7;
+                }
+            }
+            size_t received_length = 0;
+            int copied = copy_remaining_body(&opened, output, body_prefix,
+                                             response_body_length, &received_length);
+            if (body_output_path != NULL && fclose(output) != 0) copied = 0;
+            int metadata_written = write_response_metadata(metadata_output_path, &head,
+                                                           received_length,
+                                                           body_output_path);
             close_connection(&opened);
             free(current_request);
-            return copied ? 0 : 7;
+            if (!copied || !metadata_written) return 7;
+            if (head.content_length >= 0 &&
+                (unsigned long long)head.content_length != (unsigned long long)received_length) {
+                complain("response body length does not match Content-Length");
+                return 9;
+            }
+            if (head.status < 200 || head.status >= 300) return 10;
+            return 0;
         }
 
         if (redirects >= MAX_REDIRECTS) {
@@ -750,10 +908,26 @@ static int send_request(const char *host, int port, const char *request_headers,
 
 int icu_send_http(const char *host, int port, const char *request_headers,
                   const char *request_body, int request_body_length) {
-    return send_request(host, port, request_headers, request_body, request_body_length, 0);
+    return send_request(host, port, request_headers, request_body, request_body_length,
+                        0, NULL, NULL);
 }
 
 int icu_send_https(const char *host, int port, const char *request_headers,
                    const char *request_body, int request_body_length) {
-    return send_request(host, port, request_headers, request_body, request_body_length, 1);
+    return send_request(host, port, request_headers, request_body, request_body_length,
+                        1, NULL, NULL);
+}
+
+int icu_fetch_http(const char *host, int port, const char *request_headers,
+                   const char *request_body, int request_body_length,
+                   const char *body_output_path, const char *metadata_output_path) {
+    return send_request(host, port, request_headers, request_body, request_body_length,
+                        0, body_output_path, metadata_output_path);
+}
+
+int icu_fetch_https(const char *host, int port, const char *request_headers,
+                    const char *request_body, int request_body_length,
+                    const char *body_output_path, const char *metadata_output_path) {
+    return send_request(host, port, request_headers, request_body, request_body_length,
+                        1, body_output_path, metadata_output_path);
 }
