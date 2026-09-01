@@ -1,6 +1,8 @@
 module Main
 
-import Http
+import Network.HTTP
+import Network.Types
+import Network.URL
 import System
 
 %default total
@@ -12,15 +14,19 @@ check name False = putStrLn ("FAIL " ++ name)
 https_default : Bool
 https_default =
   case parse_url "https://example.com/a?b=1#fragment" of
-    Right (https_url name number path) =>
-      name == "example.com" && number == 443 && path == "/a?b=1"
+    Right (https_url name destination_port request_target) =>
+      host_name_string name == "example.com" &&
+      destination_port_number destination_port == 443 &&
+      request_target_string request_target == "/a?b=1"
     _ => False
 
 http_explicit_port : Bool
 http_explicit_port =
   case parse_url "http://localhost:8080/hello" of
-    Right (http_url name number path) =>
-      name == "localhost" && number == 8080 && path == "/hello"
+    Right (http_url name destination_port request_target) =>
+      host_name_string name == "localhost" &&
+      destination_port_number destination_port == 8080 &&
+      request_target_string request_target == "/hello"
     _ => False
 
 reject_other_scheme : Bool
@@ -47,39 +53,40 @@ render_get =
     Left _ => False
     Right target_url =>
       render_request (get target_url) ==
-        Right
-          ("GET / HTTP/1.0\r\n" ++
-           "Host: example.com\r\n" ++
-           "Connection: close\r\n" ++
-           "Accept-Encoding: identity\r\n" ++
-           "User-Agent: icu/0.1\r\n" ++
-           "\r\n")
+        ("GET / HTTP/1.0\r\n" ++
+         "Host: example.com\r\n" ++
+         "Connection: close\r\n" ++
+         "Accept-Encoding: identity\r\n" ++
+         "User-Agent: idric-net/0.1\r\n" ++
+         "\r\n")
 
 utf8_lengths : Bool
 utf8_lengths =
-  utf8_byte_length "" == 0 &&
-  utf8_byte_length "ASCII" == 5 &&
-  utf8_byte_length "café" == 5 &&
-  utf8_byte_length "Aé€🙂" == 10
+  byte_count_number (utf8_byte_length "") == 0 &&
+  byte_count_number (utf8_byte_length "ASCII") == 5 &&
+  byte_count_number (utf8_byte_length "café") == 5 &&
+  byte_count_number (utf8_byte_length "Aé€🙂") == 10
 
 render_utf8_post : Bool
 render_utf8_post =
   case parse_url "https://example.com/message" of
     Left _ => False
     Right target_url =>
-      case render_request_parts (post target_url "café") of
-        (wire_headers, body, body_length) =>
-          wire_headers ==
-            ("POST /message HTTP/1.0\r\n" ++
-             "Host: example.com\r\n" ++
-             "Connection: close\r\n" ++
-             "Accept-Encoding: identity\r\n" ++
-             "User-Agent: icu/0.1\r\n" ++
-             "Content-Type: text/plain; charset=utf-8\r\n" ++
-             "Content-Length: 5\r\n" ++
-             "\r\n") &&
-          body == "café" &&
-          body_length == 5
+      let rendered = render_request_parts (post target_url (http_body_from_string "café"))
+          wire_head = rendered_request_head rendered
+          body = rendered_request_body rendered
+          body_length = rendered_request_body_length rendered
+      in http_request_head_text wire_head ==
+           ("POST /message HTTP/1.0\r\n" ++
+            "Host: example.com\r\n" ++
+            "Connection: close\r\n" ++
+            "Accept-Encoding: identity\r\n" ++
+            "User-Agent: idric-net/0.1\r\n" ++
+            "Content-Type: text/plain; charset=utf-8\r\n" ++
+            "Content-Length: 5\r\n" ++
+            "\r\n") &&
+         http_body_string body == "café" &&
+         byte_count_number body_length == 5
 
 all_pass : Bool
 all_pass =

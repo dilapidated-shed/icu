@@ -1,6 +1,9 @@
 module Main
 
-import Http
+import Network.HTTP
+import Network.Transport
+import Network.Types
+import Network.URL
 import System
 import Transport
 
@@ -21,7 +24,7 @@ parse_command ["get", text] =
 parse_command ["post", text, body] =
   case parse_url text of
     Left problem => Left problem
-    Right target_url => Right (post target_url body)
+    Right target_url => Right (post target_url (http_body_from_string body))
 parse_command _ = Left usage
 
 fail_with : String → IO ()
@@ -37,7 +40,7 @@ run arguments =
       outcome ← send_request value
       case outcome of
         Left problem => fail_with problem
-        Right status => exitWith (cast status)
+        Right result => exitWith (cast (process_exit_status result))
 
 main : IO ()
 main = do

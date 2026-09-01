@@ -1,44 +1,48 @@
 # ICU
 
-ICU is a deliberately small HTTP client written in Idriç.
+ICU is a deliberately small HTTP client written in Idriç and built on
+[`Idric-Net`](https://github.com/isomorphisms/Idric-Net) for reusable networking
+semantics.
 
 The inherited curl source is preserved unchanged under `old/` as reference
 material. The new build does not compile or link curl.
 
 ## Scope
 
-Exactly two URL schemes are represented:
+ICU's command surface deliberately exposes only:
 
-- `http://`
-- `https://`
+- `http://` and `https://` URLs;
+- `GET` and `POST` requests.
 
-Exactly two requests are represented:
+The reusable meanings are not defined again inside ICU. `Idric-Net` supplies the
+typed URL, host, destination-port, request-target, HTTP body, byte-count, request,
+request-head, and transport-result values. ICU chooses only the small subset it
+wants to expose as a command-line program.
 
-- `GET`
-- `POST`
+The current boundary is:
 
-Unsupported protocols and methods are absent from the request model rather than
-stored as strings and rejected much later.
-
-```idris
-choice url one_of
-  http_url String Nat String
-  https_url String Nat String
-
-choice request one_of
-  get url
-  post url String
+```text
+ICU command grammar
+       |
+       v
+Idric-Net URL / HTTP / transport types
+       |
+       v
+ICU native transport adapter
+       |
+       v
+OS sockets + OpenSSL
 ```
 
-`src/Http.idric` owns URL parsing and HTTP request rendering.
-`src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
-`native/transport.c` owns sockets, OpenSSL, response framing, and the small
-amount of response-header handling needed to keep GET useful on the web.
-`src/Main.idric` owns the tiny command-line grammar.
+`src/Main.idric` parses the command line into Idric-Net values.
+`src/Transport.idric` converts those semantic values to the current native ABI
+only at the FFI boundary. `native/transport.c` still owns the present socket,
+OpenSSL, response-framing, redirect, and response-streaming implementation.
 
+Native integer transport outcomes are converted immediately to Idric-Net's
+finite `transport_result`; they are not the application-level transport model.
 The C boundary independently refuses wire requests that do not begin with GET
-or POST. There is no protocol registry or generic method string in the active
-Edriç model.
+or POST.
 
 ## Commands
 
@@ -47,13 +51,15 @@ icu get https://example.com/
 icu post https://example.com/message hello
 ```
 
-The transport uses HTTP/1.0 plus `Connection: close`. Requests advertise
-`Accept-Encoding: identity`, so HTML and image bodies can be consumed directly
-without first adding gzip/brotli decoding. POST text is encoded as UTF-8:
-Idriç computes `Content-Length` from the encoded byte count, then the native
-transport writes request headers and body separately using that explicit body
-length. Response headers are bounded to 64 KiB. The status line and `Location`
-are parsed before the final response body is streamed byte-for-byte to stdout;
+The request model currently renders HTTP/1.0 plus `Connection: close` and asks
+for `Accept-Encoding: identity`, so HTML and image bodies can be consumed
+directly without first adding gzip/brotli decoding. POST text is UTF-8.
+Idric-Net computes the encoded `ByteCount`; ICU unwraps that value only when it
+calls the native transport, which writes request headers and body separately
+using the explicit byte count.
+
+Response headers are bounded to 64 KiB. The status line and `Location` are
+parsed before the final response body is streamed byte-for-byte to stdout;
 other response headers remain internal for now.
 
 ### Redirects
@@ -111,11 +117,21 @@ than a browser DOM.
 
 ## Build
 
-Requirements: the Edriç/Idriç compiler fork, a C11 compiler, and OpenSSL.
+Requirements: the Edriç/Idriç compiler fork, an installed `idric_net` package,
+a C11 compiler, and OpenSSL.
+
+Install Idric-Net with the same compiler/prefix used for ICU:
 
 ```sh
+cd ../Idric-Net
+idris2 --install idric-net.ipkg
+cd ../icu
 make IDRIC=/opt/Idric/build/exec/idris2
 ```
+
+CI pins the exact Idric-Net commit it installs before compiling ICU, so the
+cross-repository boundary is reproducible rather than dependent on whatever a
+branch happens to contain later.
 
 Run the executable from the repository root so the Scheme C FFI can find the
 repo-local transport library:

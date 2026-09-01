@@ -18,8 +18,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: isomorphisms/Idric
-          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          ref: 47557b43053c829d4f8aa1581007002b57f9c59f
           path: .tools/Idric
+
+      - name: Checkout Idric-Net
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric-Net
+          ref: 3e7643c8d8dd2a940d5b6dc96403ddae765402cd
+          path: .tools/Idric-Net
 
       - name: Install build dependencies
         run: |
@@ -30,6 +37,13 @@ jobs:
         run: |
           make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
           "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --version
+
+      - name: Install Idric-Net package
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          cd "$GITHUB_WORKSPACE/.tools/Idric-Net"
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --install idric-net.ipkg
 
       - name: Compile ICU through Idric
         env:
@@ -42,7 +56,7 @@ jobs:
         env:
           IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
         run: |
-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
+          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" -p idric_net tests/HttpTests.idric -o icu-http-tests
           ./build/exec/icu-http-tests
 
       - name: Start deterministic HTTP and HTTPS servers
@@ -175,7 +189,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: isomorphisms/Idric
-          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          ref: 47557b43053c829d4f8aa1581007002b57f9c59f
           path: .tools/Idric
 
       - name: Checkout canonical hostile-input corpus
@@ -184,6 +198,13 @@ jobs:
           repository: isomorphisms/ai-ci
           ref: c1e423d506f6adfc8c1c9659a4faaf94ae84eaf0
           path: .tools/ai-ci
+
+      - name: Checkout Idric-Net
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric-Net
+          ref: 3e7643c8d8dd2a940d5b6dc96403ddae765402cd
+          path: .tools/Idric-Net
 
       - name: Install compiler, trace, TLS, and oracle dependencies
         run: |
@@ -196,10 +217,12 @@ jobs:
           IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
         run: |
           make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+          (cd "$GITHUB_WORKSPACE/.tools/Idric-Net" && \
+            "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --install idric-net.ipkg)
           make check-native
           make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
           "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" \
-            tests/IngestionReceipt.idric -o icu-ingestion
+            -p idric_net tests/IngestionReceipt.idric -o icu-ingestion
           test -x build/exec/icu-ingestion
           test -f build/exec/icu-ingestion_app/icu-ingestion.so
 

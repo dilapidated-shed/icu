@@ -1,6 +1,9 @@
 module Transport
 
-import Http
+import Network.HTTP
+import Network.Transport
+import Network.Types
+import Network.URL
 
 %foreign "C:icu_send_http,libicu_transport"
 prim_send_http : String → Int → String → String → Int → PrimIO Int
@@ -14,36 +17,66 @@ prim_fetch_http : String → Int → String → String → Int → String → St
 %foreign "C:icu_fetch_https,libicu_transport"
 prim_fetch_https : String → Int → String → String → Int → String → String → PrimIO Int
 
-transmit : url → String → String → Int → IO Int
-transmit (http_url name number _) wire_headers body body_length =
-  primIO (prim_send_http name (cast number) wire_headers body body_length)
-transmit (https_url name number _) wire_headers body body_length =
-  primIO (prim_send_https name (cast number) wire_headers body body_length)
+transmit : url → HttpRequestHead → HttpBody → ByteCount → IO Int
+transmit (http_url name destination_port _) wire_head body body_length =
+  primIO
+    (prim_send_http
+      (host_name_string name)
+      (destination_port_number destination_port)
+      (http_request_head_text wire_head)
+      (http_body_string body)
+      (cast (byte_count_number body_length)))
+transmit (https_url name destination_port _) wire_head body body_length =
+  primIO
+    (prim_send_https
+      (host_name_string name)
+      (destination_port_number destination_port)
+      (http_request_head_text wire_head)
+      (http_body_string body)
+      (cast (byte_count_number body_length)))
 
 public export
-send_request : request → IO (Either String Int)
-send_request value =
-  case render_request_parts value of
-    (wire_headers, body, body_length) =>
-      case value of
-        get target_url => do
-          status ← transmit target_url wire_headers body body_length
-          pure (Right status)
-        post target_url _ => do
-          status ← transmit target_url wire_headers body body_length
-          pure (Right status)
+send_request : request → IO (Either String transport_result)
+send_request value = do
+  let rendered = render_request_parts value
+  native_code ←
+    transmit
+      (request_url value)
+      (rendered_request_head rendered)
+      (rendered_request_body rendered)
+      (rendered_request_body_length rendered)
+  pure (transport_result_from_native_code native_code)
 
-fetch : url → String → String → Int → String → String → IO Int
-fetch (http_url name number _) wire_headers body body_length body_path metadata_path =
-  primIO (prim_fetch_http name (cast number) wire_headers body body_length body_path metadata_path)
-fetch (https_url name number _) wire_headers body body_length body_path metadata_path =
-  primIO (prim_fetch_https name (cast number) wire_headers body body_length body_path metadata_path)
+fetch : url → HttpRequestHead → HttpBody → ByteCount → String → String → IO Int
+fetch (http_url name destination_port _) wire_head body body_length body_path metadata_path =
+  primIO
+    (prim_fetch_http
+      (host_name_string name)
+      (destination_port_number destination_port)
+      (http_request_head_text wire_head)
+      (http_body_string body)
+      (cast (byte_count_number body_length))
+      body_path
+      metadata_path)
+fetch (https_url name destination_port _) wire_head body body_length body_path metadata_path =
+  primIO
+    (prim_fetch_https
+      (host_name_string name)
+      (destination_port_number destination_port)
+      (http_request_head_text wire_head)
+      (http_body_string body)
+      (cast (byte_count_number body_length))
+      body_path
+      metadata_path)
 
 public export
 fetch_to_files : request → String → String → IO Int
-fetch_to_files value body_path metadata_path =
-  case render_request_parts value of
-    (wire_headers, body, body_length) =>
-      case value of
-        get target_url => fetch target_url wire_headers body body_length body_path metadata_path
-        post target_url _ => fetch target_url wire_headers body body_length body_path metadata_path
+fetch_to_files value body_path metadata_path = do
+  let rendered = render_request_parts value
+  fetch
+    (request_url value)
+    (rendered_request_head rendered)
+    (rendered_request_body rendered)
+    (rendered_request_body_length rendered)
+    body_path
+    metadata_path
