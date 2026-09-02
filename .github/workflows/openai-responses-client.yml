@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: isomorphisms/Idric
-          ref: 7764bb2c04df4525cec0dfc6125d0a607fb6fca5
+          ref: 74f2ce870fb812356b55d48e873e801c44412405
           path: .tools/Idric
 
       - name: Install build and trace dependencies
@@ -35,13 +35,13 @@ jobs:
 
       - name: Build Idric and ICU
         env:
-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
         run: |
-          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
-          make -C "$GITHUB_WORKSPACE/.tools/Idric" test only=idris2/basic/edric005
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap SCHEME=scheme
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" test only=idris2/basic/edric005
           make check-native
-          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" \
+          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
+          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" \
             tests/OpenAITests.idric -o icu-openai-tests
           ./build/exec/icu-openai-tests
 
