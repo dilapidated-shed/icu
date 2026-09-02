@@ -12,6 +12,10 @@ choice request one_of
   get url
   post url String
 
+public export
+choice request_header one_of
+  http_header String String
+
 strip_prefix : List Char → List Char → Maybe (List Char)
 strip_prefix [] input = Just input
 strip_prefix _ [] = Nothing
@@ -149,12 +153,110 @@ authority (http_url name 80 _) = name
 authority (https_url name 443 _) = name
 authority value = host value ++ ":" ++ show (port value)
 
-common_headers : url → String
-common_headers target_url =
-  "Host: " ++ authority target_url ++ "\r\n" ++
+ascii_lower : Char → Char
+ascii_lower character =
+  if character >= 'A' && character <= 'Z'
+    then chr (ord character + 32)
+    else character
+
+ascii_equal : List Char → List Char → Bool
+ascii_equal [] [] = True
+ascii_equal [] _ = False
+ascii_equal _ [] = False
+ascii_equal (left :: remaining_left) (right :: remaining_right) =
+  ascii_lower left == ascii_lower right &&
+  ascii_equal remaining_left remaining_right
+
+header_name_equal : String → String → Bool
+header_name_equal left right = ascii_equal (unpack left) (unpack right)
+
+header_name_character : Char → Bool
+header_name_character character =
+  (character >= 'A' && character <= 'Z') ||
+  (character >= 'a' && character <= 'z') ||
+  (character >= '0' && character <= '9') ||
+  character == '-' || character == '_'
+
+header_value_character : Char → Bool
+header_value_character character =
+  character == '\t' || (ord character >= 32 && ord character < 127)
+
+reserved_header_name : String → Bool
+reserved_header_name name =
+  header_name_equal name "Connection" ||
+  header_name_equal name "Content-Length" ||
+  header_name_equal name "Transfer-Encoding"
+
+header_problem : request_header → Maybe String
+header_problem (http_header name value) =
+  if name == ""
+    then Just "HTTP header name is empty"
+    else if not (all_characters header_name_character (unpack name))
+      then Just "HTTP header name must contain only ASCII letters, digits, '-' or '_'"
+      else if not (all_characters header_value_character (unpack value))
+        then Just "HTTP header value must be ASCII without control characters"
+        else if reserved_header_name name
+          then Just ("ICU owns HTTP framing header: " ++ name)
+          else Nothing
+
+public export
+make_header : String → String → Either String request_header
+make_header name value =
+  let built = http_header name value in
+    case header_problem built of
+      Nothing => Right built
+      Just problem => Left problem
+
+split_header : List Char → Maybe (List Char, List Char)
+split_header [] = Nothing
+split_header (':' :: rest) = Just ([], rest)
+split_header (character :: rest) =
+  case split_header rest of
+    Nothing => Nothing
+    Just (name, value) => Just (character :: name, value)
+
+drop_header_space : List Char → List Char
+drop_header_space (' ' :: rest) = drop_header_space rest
+drop_header_space ('\t' :: rest) = drop_header_space rest
+drop_header_space characters = characters
+
+public export
+parse_header : String → Either String request_header
+parse_header text =
+  case split_header (unpack text) of
+    Nothing => Left "HTTP header must have the form Name: value"
+    Just (name, value) => make_header (pack name) (pack (drop_header_space value))
+
+header_named : String → request_header → Bool
+header_named wanted (http_header name _) = header_name_equal wanted name
+
+has_header : String → List request_header → Bool
+has_header _ [] = False
+has_header wanted (current :: rest) =
+  header_named wanted current || has_header wanted rest
+
+render_headers : List request_header → String
+render_headers [] = ""
+render_headers (http_header name value :: rest) =
+  name ++ ": " ++ value ++ "\r\n" ++ render_headers rest
+
+validate_headers : List request_header → Maybe String
+validate_headers [] = Nothing
+validate_headers (current :: rest) =
+  case header_problem current of
+    Just problem => Just problem
+    Nothing => validate_headers rest
+
+optional_default_header : String → String → List request_header → String
+optional_default_header name value headers =
+  if has_header name headers then "" else name ++ ": " ++ value ++ "\r\n"
+
+base_headers : url → List request_header → String
+base_headers target_url headers =
+  optional_default_header "Host" (authority target_url) headers ++
   "Connection: close\r\n" ++
-  "Accept-Encoding: identity\r\n" ++
-  "User-Agent: icu/0.1\r\n"
+  optional_default_header "Accept-Encoding" "identity" headers ++
+  optional_default_header "User-Agent" "icu/0.1" headers
 
 utf8_character_bytes : Char → Int
 utf8_character_bytes character =
@@ -176,23 +278,43 @@ public export
 utf8_byte_length : String → Int
 utf8_byte_length text = utf8_byte_length_characters (unpack text)
 
-public export
-render_request_parts : request → (String, String, Int)
-render_request_parts (get target_url) =
+render_request_parts_unchecked : request → List request_header → (String, String, Int)
+render_request_parts_unchecked (get target_url) headers =
   ("GET " ++ target target_url ++ " HTTP/1.0\r\n" ++
-   common_headers target_url ++
+   base_headers target_url headers ++
+   render_headers headers ++
    "\r\n",
    "",
    0)
-render_request_parts (post target_url body) =
+render_request_parts_unchecked (post target_url body) headers =
   let body_length = utf8_byte_length body in
     ("POST " ++ target target_url ++ " HTTP/1.0\r\n" ++
-     common_headers target_url ++
-     "Content-Type: text/plain; charset=utf-8\r\n" ++
+     base_headers target_url headers ++
+     optional_default_header "Content-Type" "text/plain; charset=utf-8" headers ++
+     render_headers headers ++
      "Content-Length: " ++ show body_length ++ "\r\n" ++
      "\r\n",
      body,
      body_length)
+
+public export
+render_request_parts_with_headers :
+  request → List request_header → Either String (String, String, Int)
+render_request_parts_with_headers value headers =
+  case validate_headers headers of
+    Just problem => Left problem
+    Nothing => Right (render_request_parts_unchecked value headers)
+
+public export
+render_request_parts : request → (String, String, Int)
+render_request_parts value = render_request_parts_unchecked value []
+
+public export
+render_request_with_headers : request → List request_header → Either String String
+render_request_with_headers value headers =
+  case render_request_parts_with_headers value headers of
+    Left problem => Left problem
+    Right (wire_headers, body, _) => Right (wire_headers ++ body)
 
 public export
 render_request : request → Either String String

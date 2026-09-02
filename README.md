@@ -28,19 +28,21 @@ choice url one_of
 choice request one_of
   get url
   post url String
+
+choice request_header one_of
+  http_header String String
 ```
 
-`src/Http.idric` owns URL parsing and HTTP request rendering.
-`src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
-`native/transport.c` owns sockets, OpenSSL, response framing, and the small
-amount of response-header handling needed to keep GET useful on the web.
-`src/TransportModel.idric` is the side-by-side Idriç translation of the pure
-parts of that native transport: status and header parsing, redirect
+`src/Http.idric` owns URL parsing, checked caller-supplied headers, and HTTP
+request rendering. `src/Transport.idric` chooses plain TCP or verified TLS from
+the URL choice. `native/transport.c` owns sockets, OpenSSL, response framing,
+and the small amount of response-header handling needed to keep GET useful on
+the web. `src/TransportModel.idric` is the side-by-side Idriç translation of the
+pure parts of that native transport: status and header parsing, redirect
 classification and resolution, request-target validation, and redirected GET
 rewriting. The live transport still uses the C copies while their equivalence
-boundary is established.
-`src/OpenAI.idric` owns the Responses API request JSON, authentication header,
-response extraction, and fresh-chat command behavior.
+boundary is established. `src/OpenAI.idric` owns the Responses API request JSON,
+authentication header, response extraction, and fresh-chat command behavior.
 `src/Main.idric` owns the tiny command-line grammar.
 
 The C boundary independently refuses wire requests that do not begin with GET
@@ -51,17 +53,29 @@ Edriç model.
 
 ```text
 icu get https://example.com/
-icu post https://example.com/message hello
+icu get -H 'X-Api-Key: secret' https://example.com/data
+icu post -H 'Content-Type: application/json' https://example.com/message '{}'
 ```
 
+`-H` and `--header` may be repeated before the URL. This restores the useful
+caller-header part of curl's old command surface without reviving curl itself.
+A caller header with the same case-insensitive name as ICU's default `Host`,
+`Accept-Encoding`, `User-Agent`, or POST `Content-Type` replaces that default.
+ICU still owns request framing: caller attempts to set `Connection`,
+`Content-Length`, or `Transfer-Encoding` are refused. Header names are currently
+a safe ASCII subset (letters, digits, `-`, `_`), and values may contain only
+visible ASCII plus horizontal tab; CR/LF injection is rejected. Curl's `-H
+@file` form is not implemented.
+
 The transport uses HTTP/1.0 plus `Connection: close`. Requests advertise
-`Accept-Encoding: identity`, so HTML and image bodies can be consumed directly
-without first adding gzip/brotli decoding. POST text is encoded as UTF-8:
-Idriç computes `Content-Length` from the encoded byte count, then the native
-transport writes request headers and body separately using that explicit body
-length. Response headers are bounded to 64 KiB. The status line and `Location`
-are parsed before the final response body is streamed byte-for-byte to stdout;
-other response headers remain internal for now.
+`Accept-Encoding: identity` unless the caller replaces it, so HTML and image
+bodies can normally be consumed directly without first adding gzip/brotli
+decoding. POST text is encoded as UTF-8: Idriç computes `Content-Length` from
+the encoded byte count, then the native transport writes request headers and
+body separately using that explicit body length. Response headers are bounded
+to 64 KiB. The status line and `Location` are parsed before the final response
+body is streamed byte-for-byte to stdout; other response headers remain internal
+for now.
 
 ### OpenAI Responses API
 
@@ -86,11 +100,13 @@ supplied. The API key is read only from `OPENAI_API_KEY`, rejected if it cannot
 safely form one HTTP header value, and is never written to stdout, stderr, the
 response files, or reproducibility metadata.
 
-This is intentionally dogfooded through ICU. The OpenAI-specific code is Idriç
-and calls ICU's existing checked file-backed transport seam. It does not invoke
-curl, Python, an OpenAI SDK, or another HTTP client. The current sockets/TLS
-owner remains the already-declared `native/transport.c` C/OpenSSL boundary; this
-change does not mislabel that older boundary as one-language transport.
+This is intentionally dogfooded through ICU. The OpenAI-specific code is Idriç,
+constructs its Authorization, JSON Content-Type, and User-Agent through the same
+checked `request_header` values exposed to other ICU callers, and uses the
+generic file-backed ICU transport path. It does not invoke curl, Python, an
+OpenAI SDK, or another HTTP client. The current sockets/TLS owner remains the
+already-declared `native/transport.c` C/OpenSSL boundary; this change does not
+mislabel that older boundary as one-language transport.
 
 The JSON work is also local: Idriç escapes the prompt/model request strings and
 extracts an `output_text` string from the returned Responses JSON, including
@@ -109,11 +125,16 @@ Supported `Location` forms are:
 - ordinary relative paths;
 - query-only redirects.
 
-Fragments are removed before the redirected request. Redirected GET preserves
-the original request headers except that the request target and `Host` header
-are rewritten for the new endpoint. Cross-scheme redirects reselect plain TCP
-or verified TLS from the destination. POST redirects are deliberately not
-followed yet because 301/302/303 method rewriting needs an explicit Idriç policy.
+Fragments are removed before the redirected request. Redirected GET rewrites the
+request target and `Host` header for the new endpoint. Other headers are
+preserved on same-origin redirects. On a change of scheme, host, or port,
+`Authorization` and `Cookie` are stripped before the next request, matching the
+specific credential rule documented by the preserved curl `--header` source;
+other caller headers remain present. A caller using another secret-bearing header
+name such as `X-Api-Key` should therefore avoid an untrusted cross-origin redirect.
+Cross-scheme redirects reselect plain TCP or verified TLS from the destination.
+POST redirects are deliberately not followed yet because 301/302/303 method
+rewriting needs an explicit Idriç policy.
 
 Response bodies are binary-safe: an image can be fetched directly to a file,
 for example:
@@ -124,8 +145,9 @@ icu get https://example.com/cover.jpg > cover.jpg
 
 Current intentional limits:
 
-- no proxies, cookies, authentication helpers outside the narrow OpenAI command, or custom methods
-- no compressed-response decoder; requests currently ask servers for identity encoding
+- no proxies, cookie jar, authentication helper layer, or custom methods
+- custom header files (`-H @file`) are not supported
+- no compressed-response decoder; requests normally ask servers for identity encoding
 - POST redirects are not followed
 - no FTP, SMTP, file URLs, or other curl protocols
 - URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
@@ -168,7 +190,7 @@ repo-local transport library:
 ```
 
 `make check-native` compiles the native boundary with warnings promoted to
-errors.
+errors and runs the redirect credential-policy checks.
 
 `make check-transport-model` runs every case in
 `tests/transport-fixtures.json` through a C oracle built directly from

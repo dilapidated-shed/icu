@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: isomorphisms/Idric
-          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          ref: 74f2ce870fb812356b55d48e873e801c44412405
           path: .tools/Idric
 
       - name: Install build dependencies
@@ -28,29 +28,29 @@ jobs:
 
       - name: Build Idric compiler
         run: |
-          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --version
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap SCHEME=scheme
+          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" --version
 
       - name: Compile ICU through Idric
         env:
-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
         run: |
           make check-native
-          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
 
       - name: Run pure Idric HTTP model tests
         env:
-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
         run: |
-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
+          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
           ./build/exec/icu-http-tests
 
       - name: Compare C and Idric transport models
         env:
-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
         run: |
           make check-transport-model \
-            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
 
       - name: Start deterministic HTTP and HTTPS servers
         run: |
@@ -182,7 +182,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: isomorphisms/Idric
-          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          ref: 74f2ce870fb812356b55d48e873e801c44412405
           path: .tools/Idric
 
       - name: Checkout canonical hostile-input corpus
@@ -200,12 +200,12 @@ jobs:
 
       - name: Build Idric compiler and ICU ingestion executable
         env:
-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
         run: |
-          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap SCHEME=scheme
           make check-native
-          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" \
+          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
+          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" \
             tests/IngestionReceipt.idric -o icu-ingestion
           test -x build/exec/icu-ingestion
           test -f build/exec/icu-ingestion_app/icu-ingestion.so
