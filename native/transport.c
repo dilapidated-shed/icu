@@ -943,11 +943,10 @@ static int send_request(const char *host, int port, const char *request_headers,
             complain("unsupported redirect location");
             return 8;
         }
-        char *next_request = rewrite_get_request_with_policy(
-            current_request,
-            &next,
-            same_origin(&current, &next),
-            credential_header_names);
+        char *next_request = same_origin(&current, &next)
+            ? rewrite_get_request(current_request, &next)
+            : rewrite_get_request_with_policy(
+                current_request, &next, 0, credential_header_names);
         if (next_request == NULL) {
             close_connection(&opened);
             free(current_request);
