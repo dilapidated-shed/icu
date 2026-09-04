@@ -34,13 +34,17 @@ int main(void) {
         "Host: example.com\r\n"
         "Authorization: Bearer secret\r\n"
         "Cookie: session=secret\r\n"
+        "X-Api-Key: synthetic-secret\r\n"
         "X-Trace: keep-me\r\n"
         "\r\n";
+    const char *declared_credentials = "x-api-key\n";
 
-    char *same_request = rewrite_get_request_with_policy(request, &same, 1);
+    char *same_request = rewrite_get_request_with_policy(
+        request, &same, 1, declared_credentials);
     if (same_request == NULL ||
         !contains(same_request, "Authorization: Bearer secret\r\n") ||
         !contains(same_request, "Cookie: session=secret\r\n") ||
+        !contains(same_request, "X-Api-Key: synthetic-secret\r\n") ||
         !contains(same_request, "X-Trace: keep-me\r\n")) {
         free(same_request);
         fputs("same-origin credentials were not preserved\n", stderr);
@@ -48,10 +52,12 @@ int main(void) {
     }
     free(same_request);
 
-    char *cross_request = rewrite_get_request_with_policy(request, &other_host, 0);
+    char *cross_request = rewrite_get_request_with_policy(
+        request, &other_host, 0, declared_credentials);
     if (cross_request == NULL ||
         contains(cross_request, "Authorization:") ||
         contains(cross_request, "Cookie:") ||
+        contains(cross_request, "X-Api-Key:") ||
         !contains(cross_request, "X-Trace: keep-me\r\n") ||
         !contains(cross_request, "Host: other.example\r\n")) {
         free(cross_request);
