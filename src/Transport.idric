@@ -8,11 +8,27 @@ prim_send_http : String → Int → String → String → Int → PrimIO Int
 %foreign "C:icu_send_https,libicu_transport"
 prim_send_https : String → Int → String → String → Int → PrimIO Int
 
+%foreign "C:icu_send_http_with_credentials,libicu_transport"
+prim_send_http_with_credentials :
+  String → Int → String → String → Int → String → PrimIO Int
+
+%foreign "C:icu_send_https_with_credentials,libicu_transport"
+prim_send_https_with_credentials :
+  String → Int → String → String → Int → String → PrimIO Int
+
 %foreign "C:icu_fetch_http,libicu_transport"
 prim_fetch_http : String → Int → String → String → Int → String → String → PrimIO Int
 
 %foreign "C:icu_fetch_https,libicu_transport"
 prim_fetch_https : String → Int → String → String → Int → String → String → PrimIO Int
+
+%foreign "C:icu_fetch_http_with_credentials,libicu_transport"
+prim_fetch_http_with_credentials :
+  String → Int → String → String → Int → String → String → String → PrimIO Int
+
+%foreign "C:icu_fetch_https_with_credentials,libicu_transport"
+prim_fetch_https_with_credentials :
+  String → Int → String → String → Int → String → String → String → PrimIO Int
 
 transmit : url → String → String → Int → IO Int
 transmit (http_url name number _) wire_headers body body_length =
@@ -20,19 +36,44 @@ transmit (http_url name number _) wire_headers body body_length =
 transmit (https_url name number _) wire_headers body body_length =
   primIO (prim_send_https name (cast number) wire_headers body body_length)
 
+transmit_with_credentials : url → String → String → Int → String → IO Int
+transmit_with_credentials (http_url name number _) wire_headers body body_length credential_names =
+  primIO
+    (prim_send_http_with_credentials
+      name
+      (cast number)
+      wire_headers
+      body
+      body_length
+      credential_names)
+transmit_with_credentials (https_url name number _) wire_headers body body_length credential_names =
+  primIO
+    (prim_send_https_with_credentials
+      name
+      (cast number)
+      wire_headers
+      body
+      body_length
+      credential_names)
+
 public export
 send_request_with_headers : request → List request_header → IO (Either String Int)
 send_request_with_headers value headers =
   case render_request_parts_with_headers value headers of
     Left problem => pure (Left problem)
     Right (wire_headers, body, body_length) =>
-      case value of
-        get target_url => do
-          status ← transmit target_url wire_headers body body_length
-          pure (Right status)
-        post target_url _ => do
-          status ← transmit target_url wire_headers body body_length
-          pure (Right status)
+      let credential_names = credential_header_names headers in
+        case value of
+          get target_url => do
+            status ←
+              transmit_with_credentials
+                target_url wire_headers body body_length credential_names
+            pure (Right status)
+          post target_url _ => do
+            status ←
+              transmit_with_credentials
+                target_url wire_headers body body_length credential_names
+            pure (Right status)
 
 public export
 send_request : request → IO (Either String Int)
@@ -43,6 +84,45 @@ fetch (http_url name number _) wire_headers body body_length body_path metadata_
   primIO (prim_fetch_http name (cast number) wire_headers body body_length body_path metadata_path)
 fetch (https_url name number _) wire_headers body body_length body_path metadata_path =
   primIO (prim_fetch_https name (cast number) wire_headers body body_length body_path metadata_path)
+
+fetch_with_credentials :
+  url → String → String → Int → String → String → String → IO Int
+fetch_with_credentials
+  (http_url name number _)
+  wire_headers
+  body
+  body_length
+  body_path
+  metadata_path
+  credential_names =
+    primIO
+      (prim_fetch_http_with_credentials
+        name
+        (cast number)
+        wire_headers
+        body
+        body_length
+        body_path
+        metadata_path
+        credential_names)
+fetch_with_credentials
+  (https_url name number _)
+  wire_headers
+  body
+  body_length
+  body_path
+  metadata_path
+  credential_names =
+    primIO
+      (prim_fetch_https_with_credentials
+        name
+        (cast number)
+        wire_headers
+        body
+        body_length
+        body_path
+        metadata_path
+        credential_names)
 
 public export
 fetch_raw_to_files : url → String → String → Int → String → String → IO Int
@@ -56,13 +136,30 @@ fetch_to_files_with_headers value headers body_path metadata_path =
   case render_request_parts_with_headers value headers of
     Left problem => pure (Left problem)
     Right (wire_headers, body, body_length) =>
-      case value of
-        get target_url => do
-          status ← fetch target_url wire_headers body body_length body_path metadata_path
-          pure (Right status)
-        post target_url _ => do
-          status ← fetch target_url wire_headers body body_length body_path metadata_path
-          pure (Right status)
+      let credential_names = credential_header_names headers in
+        case value of
+          get target_url => do
+            status ←
+              fetch_with_credentials
+                target_url
+                wire_headers
+                body
+                body_length
+                body_path
+                metadata_path
+                credential_names
+            pure (Right status)
+          post target_url _ => do
+            status ←
+              fetch_with_credentials
+                target_url
+                wire_headers
+                body
+                body_length
+                body_path
+                metadata_path
+                credential_names
+            pure (Right status)
 
 public export
 fetch_to_files : request → String → String → IO Int
