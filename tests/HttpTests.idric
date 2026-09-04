@@ -60,7 +60,7 @@ parse_authorization_header =
   case parse_header "Authorization: Bearer example-token" of
     Right (http_header name value) =>
       name == "Authorization" && value == "Bearer example-token"
-    Left _ => False
+    _ => False
 
 reject_header_value_injection : Bool
 reject_header_value_injection =
@@ -91,6 +91,28 @@ render_custom_get =
                "User-Agent: icu/0.1\r\n" ++
                "X-Api-Key: secret\r\n" ++
                "\r\n")
+
+credential_header_surface : Bool
+credential_header_surface =
+  case parse_url "https://example.com/data" of
+    Left _ => False
+    Right target_url =>
+      case make_credential_header "X-Api-Key" "secret" of
+        Left _ => False
+        Right custom@(credential_header name value) =>
+          name == "X-Api-Key" &&
+          value == "secret" &&
+          credential_header_names [custom] == "X-Api-Key\n" &&
+          render_request_with_headers (get target_url) [custom] ==
+            Right
+              ("GET /data HTTP/1.0\r\n" ++
+               "Host: example.com\r\n" ++
+               "Connection: close\r\n" ++
+               "Accept-Encoding: identity\r\n" ++
+               "User-Agent: icu/0.1\r\n" ++
+               "X-Api-Key: secret\r\n" ++
+               "\r\n")
+        Right _ => False
 
 replace_default_header : Bool
 replace_default_header =
@@ -150,6 +172,7 @@ all_pass =
   reject_header_value_injection &&
   reject_framing_header &&
   render_custom_get &&
+  credential_header_surface &&
   replace_default_header &&
   utf8_lengths &&
   render_utf8_post
@@ -166,6 +189,7 @@ main = do
   check "reject CRLF in caller header value" reject_header_value_injection
   check "caller cannot override Content-Length" reject_framing_header
   check "render caller-supplied GET header" render_custom_get
+  check "credential header carries redirect metadata" credential_header_surface
   check "caller Content-Type replaces the default" replace_default_header
   check "UTF-8 byte lengths" utf8_lengths
   check "POST carries UTF-8 body with byte Content-Length" render_utf8_post

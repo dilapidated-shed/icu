@@ -15,6 +15,7 @@ choice request one_of
 public export
 choice request_header one_of
   http_header String String
+  credential_header String String
 
 strip_prefix : List Char → List Char → Maybe (List Char)
 strip_prefix [] input = Just input
@@ -187,9 +188,19 @@ reserved_header_name name =
   header_name_equal name "Content-Length" ||
   header_name_equal name "Transfer-Encoding"
 
+header_name : request_header → String
+header_name (http_header name _) = name
+header_name (credential_header name _) = name
+
+header_value : request_header → String
+header_value (http_header _ value) = value
+header_value (credential_header _ value) = value
+
 header_problem : request_header → Maybe String
-header_problem (http_header name value) =
-  if name == ""
+header_problem current =
+  let name = header_name current
+      value = header_value current
+  in if name == ""
     then Just "HTTP header name is empty"
     else if not (all_characters header_name_character (unpack name))
       then Just "HTTP header name must contain only ASCII letters, digits, '-' or '_'"
@@ -203,6 +214,14 @@ public export
 make_header : String → String → Either String request_header
 make_header name value =
   let built = http_header name value in
+    case header_problem built of
+      Nothing => Right built
+      Just problem => Left problem
+
+public export
+make_credential_header : String → String → Either String request_header
+make_credential_header name value =
+  let built = credential_header name value in
     case header_problem built of
       Nothing => Right built
       Just problem => Left problem
@@ -228,7 +247,7 @@ parse_header text =
     Just (name, value) => make_header (pack name) (pack (drop_header_space value))
 
 header_named : String → request_header → Bool
-header_named wanted (http_header name _) = header_name_equal wanted name
+header_named wanted current = header_name_equal wanted (header_name current)
 
 has_header : String → List request_header → Bool
 has_header _ [] = False
@@ -237,8 +256,8 @@ has_header wanted (current :: rest) =
 
 render_headers : List request_header → String
 render_headers [] = ""
-render_headers (http_header name value :: rest) =
-  name ++ ": " ++ value ++ "\r\n" ++ render_headers rest
+render_headers (current :: rest) =
+  header_name current ++ ": " ++ header_value current ++ "\r\n" ++ render_headers rest
 
 validate_headers : List request_header → Maybe String
 validate_headers [] = Nothing
@@ -246,6 +265,13 @@ validate_headers (current :: rest) =
   case header_problem current of
     Just problem => Just problem
     Nothing => validate_headers rest
+
+public export
+credential_header_names : List request_header → String
+credential_header_names [] = ""
+credential_header_names (http_header _ _ :: rest) = credential_header_names rest
+credential_header_names (credential_header name _ :: rest) =
+  name ++ "\n" ++ credential_header_names rest
 
 optional_default_header : String → String → List request_header → String
 optional_default_header name value headers =
