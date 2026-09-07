@@ -32,10 +32,11 @@ fail_with problem = do
   putStrLn problem
   exitFailure
 
+exit_status_number : ProcessExitStatus → Int
+exit_status_number status = cast (process_exit_status_bits status)
+
 exit_code : transport_result → ExitCode
-exit_code result =
-  cast
-    (cast (process_exit_status_bits (process_exit_status result)) : Int)
+exit_code result = cast (exit_status_number (process_exit_status result))
 
 run : List String → IO ()
 run arguments =
