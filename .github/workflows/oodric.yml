@@ -27,25 +27,25 @@ jobs:
           ref: 3e7643c8d8dd2a940d5b6dc96403ddae765402cd
           path: .tools/Idric-Net
 
-      - name: Install build dependencies
+      - name: Install host build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y chezscheme libssl-dev
+          sudo apt-get install -y build-essential curl libssl-dev
 
-      - name: Build Oodriç compiler
-        run: make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+      - name: Bootstrap Oodriç compiler
+        run: "$GITHUB_WORKSPACE/.tools/Idric/_/edric" bootstrap
 
       - name: Install Idric-Net
         env:
-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
         run: |
           cd "$GITHUB_WORKSPACE/.tools/Idric-Net"
-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --install idric-net.ipkg
+          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" --install idric-net.ipkg
 
       - name: Compile native behavior oracle
         run: make check-native
 
       - name: Compile ICU with Oodriç
         env:
-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
-        run: make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+        run: make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
