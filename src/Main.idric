@@ -40,7 +40,9 @@ run arguments =
       outcome ← send_request value
       case outcome of
         Left problem => fail_with problem
-        Right result => exitWith (cast (process_exit_status result))
+        Right result =>
+          exitWith
+            (cast (process_exit_status_bits (process_exit_status result)))
 
 main : IO ()
 main = do
