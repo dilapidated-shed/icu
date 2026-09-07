@@ -33,7 +33,8 @@ jobs:
           sudo apt-get install -y build-essential curl libssl-dev
 
       - name: Bootstrap Oodriç compiler
-        run: "$GITHUB_WORKSPACE/.tools/Idric/_/edric" bootstrap
+        run: |
+          "$GITHUB_WORKSPACE/.tools/Idric/_/edric" bootstrap
 
       - name: Install Idric-Net
         env:
