@@ -16,7 +16,7 @@ transmit (http_url name destination_port _) wire_head body body_length =
   primIO
     (prim_send_http
       (host_name_string name)
-      (destination_port_number destination_port)
+      (cast (destination_port_number destination_port))
       (http_request_head_text wire_head)
       (http_body_string body)
       (cast (byte_count_number body_length)))
@@ -24,10 +24,21 @@ transmit (https_url name destination_port _) wire_head body body_length =
   primIO
     (prim_send_https
       (host_name_string name)
-      (destination_port_number destination_port)
+      (cast (destination_port_number destination_port))
       (http_request_head_text wire_head)
       (http_body_string body)
       (cast (byte_count_number body_length)))
+
+decode_native_result : Int → Either String transport_result
+decode_native_result native_code =
+  if native_code < 0 || native_code > 255
+    then Left "native transport returned an out-of-range result code"
+    else
+      case transport_result_from_native_code
+             (MkNativeTransportCode (cast native_code)) of
+        known_transport_result result => Right result
+        unknown_transport_code _ =>
+          Left "native transport returned an unknown result code"
 
 public export
 send_request : request → IO (Either String transport_result)
@@ -39,4 +50,4 @@ send_request value = do
       (rendered_request_head rendered)
       (rendered_request_body rendered)
       (rendered_request_body_length rendered)
-  pure (transport_result_from_native_code native_code)
+  pure (decode_native_result native_code)
