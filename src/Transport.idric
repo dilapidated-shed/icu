@@ -5,30 +5,9 @@ import Network.Transport
 import Network.Types
 import Network.URL
 
-%foreign "C:icu_send_http,libicu_transport"
-prim_send_http : String → Int → String → String → Int → PrimIO Int
 
-%foreign "C:icu_send_https,libicu_transport"
-prim_send_https : String → Int → String → String → Int → PrimIO Int
-
-transmit : url → HttpRequestHead → HttpBody → ByteCount → IO Int
-transmit (http_url name destination_port _) wire_head body body_length =
-  primIO
-    (prim_send_http
-      (host_name_string name)
-      (destination_port_number destination_port)
-      (http_request_head_text wire_head)
-      (http_body_string body)
-      (cast (byte_count_number body_length)))
-transmit (https_url name destination_port _) wire_head body body_length =
-  primIO
-    (prim_send_https
-      (host_name_string name)
-      (destination_port_number destination_port)
-      (http_request_head_text wire_head)
-      (http_body_string body)
-      (cast (byte_count_number body_length)))
-
+-- Purpose first: render a typed request, send it, then interpret the finite
+-- native outcome. The mechanics used by transmit are intentionally later.
 public export
 send_request : request → IO (Either String transport_result)
 send_request value = do
@@ -40,3 +19,28 @@ send_request value = do
       (rendered_request_body rendered)
       (rendered_request_body_length rendered)
   pure (transport_result_from_native_code native_code)
+
+transmit : url → HttpRequestHead → HttpBody → ByteCount → IO Int
+transmit (http_url name destination_port _) wire_head body body_length = do
+  let host = host_name_string name
+  let port = destination_port_number destination_port
+  let head_text = http_request_head_text wire_head
+  let body_text = http_body_string body
+  let length = cast (byte_count_number body_length)
+  primIO (prim_send_http host port head_text body_text length)
+transmit (https_url name destination_port _) wire_head body body_length = do
+  let host = host_name_string name
+  let port = destination_port_number destination_port
+  let head_text = http_request_head_text wire_head
+  let body_text = http_body_string body
+  let length = cast (byte_count_number body_length)
+  primIO (prim_send_https host port head_text body_text length)
+
+-- These are inherited implementation mechanisms, not the intended Oodriç
+-- application vocabulary. Keeping them last makes the foreign boundary visible
+-- without forcing the reader through it before seeing what ICU does.
+%foreign "C:icu_send_http,libicu_transport"
+prim_send_http : String → Int → String → String → Int → PrimIO Int
+
+%foreign "C:icu_send_https,libicu_transport"
+prim_send_https : String → Int → String → String → Int → PrimIO Int
