@@ -28,6 +28,8 @@ send_using_https :
   RenderedRequest →
   IO Int
 
+run_transport_primitive : PrimIO Int → IO Int
+
 public export
 send_request : request → IO (Either String transport_result)
 send_request value = do
@@ -53,30 +55,38 @@ send_to_destination
   prepared_request =
     send_using_https name destination_port prepared_request
 
--- The declarations below connect the readable transport actions above to
--- the existing C transport implementation. Nothing above needs to know
--- about PrimIO, C symbol names, or the integer calling convention.
+send_using_http name destination_port prepared_request = do
+  let host = host_name_string name
+  let port = destination_port_number destination_port
+  let request_head = http_request_head_text (rendered_request_head prepared_request)
+  let request_body = http_body_string (rendered_request_body prepared_request)
+  let body_byte_count = byte_count_number (rendered_request_body_length prepared_request)
+  let body_length = cast body_byte_count
+  let primitive_action =
+        primitive_send_http host port request_head request_body body_length
+  run_transport_primitive primitive_action
+
+send_using_https name destination_port prepared_request = do
+  let host = host_name_string name
+  let port = destination_port_number destination_port
+  let request_head = http_request_head_text (rendered_request_head prepared_request)
+  let request_body = http_body_string (rendered_request_body prepared_request)
+  let body_byte_count = byte_count_number (rendered_request_body_length prepared_request)
+  let body_length = cast body_byte_count
+  let primitive_action =
+        primitive_send_https host port request_head request_body body_length
+  run_transport_primitive primitive_action
+
+-- This transport is still implemented in native/transport.c. These two
+-- primitives exist only so Idriç can cross that boundary and call the C
+-- HTTP and HTTPS entry points. Ordinary transport code above should not
+-- need to know about PrimIO or the C calling convention.
 
 %foreign "C:icu_send_http,libicu_transport"
-system_send_http : String → Int → String → String → Int → PrimIO Int
+primitive_send_http : String → Int → String → String → Int → PrimIO Int
 
 %foreign "C:icu_send_https,libicu_transport"
-system_send_https : String → Int → String → String → Int → PrimIO Int
+primitive_send_https : String → Int → String → String → Int → PrimIO Int
 
-send_using_http name destination_port prepared_request =
-  primIO
-    (system_send_http
-      (host_name_string name)
-      (destination_port_number destination_port)
-      (http_request_head_text (rendered_request_head prepared_request))
-      (http_body_string (rendered_request_body prepared_request))
-      (cast (byte_count_number (rendered_request_body_length prepared_request))))
-
-send_using_https name destination_port prepared_request =
-  primIO
-    (system_send_https
-      (host_name_string name)
-      (destination_port_number destination_port)
-      (http_request_head_text (rendered_request_head prepared_request))
-      (http_body_string (rendered_request_body prepared_request))
-      (cast (byte_count_number (rendered_request_body_length prepared_request))))
+run_transport_primitive primitive_action =
+  primIO primitive_action
