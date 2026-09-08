@@ -55,7 +55,16 @@ send_prepared_request destination prepared_request = do
   pure (understand_transport_result result_code)
 
 understand_transport_result result_code =
-  transport_result_from_native_code result_code
+  if result_code < 0 || result_code > 255
+    then Left "native transport returned an out-of-range result code"
+    else
+      case transport_result_from_native_code
+        (MkNativeTransportCode (cast result_code)) of
+          known_transport_result decoded => Right decoded
+          unknown_transport_code raw_code =>
+            Left
+              ("native transport returned unknown result code " ++
+               show (native_transport_code_bits raw_code))
 
 send_to_destination
   (http_url name destination_port _)
@@ -68,7 +77,7 @@ send_to_destination
 
 send_using_http name destination_port prepared_request = do
   let host = host_name_string name
-  let port = destination_port_number destination_port
+  let port = cast (destination_port_number destination_port)
   let request_head = http_request_head_text (rendered_request_head prepared_request)
   let request_body = http_body_string (rendered_request_body prepared_request)
   let body_byte_count = byte_count_number (rendered_request_body_length prepared_request)
@@ -79,7 +88,7 @@ send_using_http name destination_port prepared_request = do
 
 send_using_https name destination_port prepared_request = do
   let host = host_name_string name
-  let port = destination_port_number destination_port
+  let port = cast (destination_port_number destination_port)
   let request_head = http_request_head_text (rendered_request_head prepared_request)
   let request_body = http_body_string (rendered_request_body prepared_request)
   let body_byte_count = byte_count_number (rendered_request_body_length prepared_request)
