@@ -5,6 +5,17 @@ import Network.Transport
 import Network.Types
 import Network.URL
 
+-- This transport is still implemented in native/transport.c. These two
+-- primitives exist only so Idriç can cross that boundary and call the C
+-- HTTP and HTTPS entry points. Ordinary transport code below should not
+-- need to know about PrimIO or the C calling convention.
+
+%foreign "C:icu_send_http,libicu_transport"
+primitive_send_http : String → Int → String → String → Int → PrimIO Int
+
+%foreign "C:icu_send_https,libicu_transport"
+primitive_send_https : String → Int → String → String → Int → PrimIO Int
+
 prepare_request : request → RenderedRequest
 
 send_prepared_request :
@@ -76,17 +87,6 @@ send_using_https name destination_port prepared_request = do
   let primitive_action =
         primitive_send_https host port request_head request_body body_length
   run_transport_primitive primitive_action
-
--- This transport is still implemented in native/transport.c. These two
--- primitives exist only so Idriç can cross that boundary and call the C
--- HTTP and HTTPS entry points. Ordinary transport code above should not
--- need to know about PrimIO or the C calling convention.
-
-%foreign "C:icu_send_http,libicu_transport"
-primitive_send_http : String → Int → String → String → Int → PrimIO Int
-
-%foreign "C:icu_send_https,libicu_transport"
-primitive_send_https : String → Int → String → String → Int → PrimIO Int
 
 run_transport_primitive primitive_action =
   primIO primitive_action
