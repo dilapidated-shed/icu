@@ -5,38 +5,88 @@ import Network.Transport
 import Network.Types
 import Network.URL
 
+-- This transport is still implemented in native/transport.c. These two
+-- primitives exist only so Idriç can cross that boundary and call the C
+-- HTTP and HTTPS entry points. Ordinary transport code below should not
+-- need to know about PrimIO or the C calling convention.
+
 %foreign "C:icu_send_http,libicu_transport"
-prim_send_http : String → Int → String → String → Int → PrimIO Int
+primitive_send_http : String → Int → String → String → Int → PrimIO Int
 
 %foreign "C:icu_send_https,libicu_transport"
-prim_send_https : String → Int → String → String → Int → PrimIO Int
+primitive_send_https : String → Int → String → String → Int → PrimIO Int
 
-transmit : url → HttpRequestHead → HttpBody → ByteCount → IO Int
-transmit (http_url name destination_port _) wire_head body body_length =
-  primIO
-    (prim_send_http
-      (host_name_string name)
-      (destination_port_number destination_port)
-      (http_request_head_text wire_head)
-      (http_body_string body)
-      (cast (byte_count_number body_length)))
-transmit (https_url name destination_port _) wire_head body body_length =
-  primIO
-    (prim_send_https
-      (host_name_string name)
-      (destination_port_number destination_port)
-      (http_request_head_text wire_head)
-      (http_body_string body)
-      (cast (byte_count_number body_length)))
+prepare_request : request → RenderedRequest
+
+send_prepared_request :
+  url →
+  RenderedRequest →
+  IO (Either String transport_result)
+
+send_to_destination : url → RenderedRequest → IO Int
+
+understand_transport_result : Int → Either String transport_result
+
+send_using_http :
+  HostName →
+  DestinationPort →
+  RenderedRequest →
+  IO Int
+
+send_using_https :
+  HostName →
+  DestinationPort →
+  RenderedRequest →
+  IO Int
+
+run_transport_primitive : PrimIO Int → IO Int
 
 public export
 send_request : request → IO (Either String transport_result)
 send_request value = do
-  let rendered = render_request_parts value
-  native_code ←
-    transmit
-      (request_url value)
-      (rendered_request_head rendered)
-      (rendered_request_body rendered)
-      (rendered_request_body_length rendered)
-  pure (transport_result_from_native_code native_code)
+  let prepared_request = prepare_request value
+  send_prepared_request (request_url value) prepared_request
+
+prepare_request value =
+  render_request_parts value
+
+send_prepared_request destination prepared_request = do
+  result_code ← send_to_destination destination prepared_request
+  pure (understand_transport_result result_code)
+
+understand_transport_result result_code =
+  transport_result_from_native_code result_code
+
+send_to_destination
+  (http_url name destination_port _)
+  prepared_request =
+    send_using_http name destination_port prepared_request
+send_to_destination
+  (https_url name destination_port _)
+  prepared_request =
+    send_using_https name destination_port prepared_request
+
+send_using_http name destination_port prepared_request = do
+  let host = host_name_string name
+  let port = destination_port_number destination_port
+  let request_head = http_request_head_text (rendered_request_head prepared_request)
+  let request_body = http_body_string (rendered_request_body prepared_request)
+  let body_byte_count = byte_count_number (rendered_request_body_length prepared_request)
+  let body_length = cast body_byte_count
+  let primitive_action =
+        primitive_send_http host port request_head request_body body_length
+  run_transport_primitive primitive_action
+
+send_using_https name destination_port prepared_request = do
+  let host = host_name_string name
+  let port = destination_port_number destination_port
+  let request_head = http_request_head_text (rendered_request_head prepared_request)
+  let request_body = http_body_string (rendered_request_body prepared_request)
+  let body_byte_count = byte_count_number (rendered_request_body_length prepared_request)
+  let body_length = cast body_byte_count
+  let primitive_action =
+        primitive_send_https host port request_head request_body body_length
+  run_transport_primitive primitive_action
+
+run_transport_primitive primitive_action =
+  primIO primitive_action
