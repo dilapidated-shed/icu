@@ -32,6 +32,12 @@ fail_with problem = do
   putStrLn problem
   exitFailure
 
+exit_status_number : ProcessExitStatus → Int
+exit_status_number status = cast (process_exit_status_bits status)
+
+exit_code : transport_result → ExitCode
+exit_code result = cast (exit_status_number (process_exit_status result))
+
 run : List String → IO ()
 run arguments =
   case parse_command arguments of
@@ -40,7 +46,7 @@ run arguments =
       outcome ← send_request value
       case outcome of
         Left problem => fail_with problem
-        Right result => exitWith (cast (process_exit_status result))
+        Right result => exitWith (exit_code result)
 
 main : IO ()
 main = do
