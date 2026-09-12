@@ -3,6 +3,6 @@ package icu
 version = 0.1.0
 sourcedir = "src"
 
-modules = Http, TransportModel, Transport, Ingestion, Main
+modules = Http, TransportModel, Transport, Ingestion, OpenAI, Main
 main = Main
 executable = icu

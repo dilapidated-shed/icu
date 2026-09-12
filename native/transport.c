@@ -692,7 +692,45 @@ static int endpoint_authority(const endpoint *value, char *output, size_t capaci
     return written > 0 && (size_t)written < capacity;
 }
 
-static char *rewrite_get_request(const char *request, const endpoint *next) {
+static int same_origin(const endpoint *left, const endpoint *right) {
+    return left->use_tls == right->use_tls &&
+           left->port == right->port &&
+           strcasecmp(left->host, right->host) == 0;
+}
+
+static int header_line_named(const char *line, size_t line_length, const char *name) {
+    size_t name_length = strlen(name);
+    return line_length > name_length && line[name_length] == ':' &&
+           strncasecmp(line, name, name_length) == 0;
+}
+
+static int header_line_named_in_list(const char *line, size_t line_length,
+                                     const char *names) {
+    if (names == NULL) {
+        return 0;
+    }
+    const char *cursor = names;
+    while (*cursor != '\0') {
+        const char *line_end = strchr(cursor, '\n');
+        size_t name_length = line_end == NULL
+            ? strlen(cursor)
+            : (size_t)(line_end - cursor);
+        if (name_length != 0 && line_length > name_length &&
+            line[name_length] == ':' &&
+            strncasecmp(line, cursor, name_length) == 0) {
+            return 1;
+        }
+        if (line_end == NULL) {
+            break;
+        }
+        cursor = line_end + 1;
+    }
+    return 0;
+}
+
+static char *rewrite_get_request_with_policy(const char *request, const endpoint *next,
+                                             int preserve_sensitive,
+                                             const char *credential_header_names) {
     const char *line_end = strstr(request, "\r\n");
     if (line_end == NULL) {
         return NULL;
@@ -730,7 +768,7 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
             break;
         }
 
-        if (line_length >= 5 && strncasecmp(cursor, "Host:", 5) == 0) {
+        if (header_line_named(cursor, line_length, "Host")) {
             written = snprintf(output + used, capacity - used, "Host: %s\r\n", authority);
             replaced_host = 1;
             if (written < 0 || (size_t)written >= capacity - used) {
@@ -738,6 +776,12 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
                 return NULL;
             }
             used += (size_t)written;
+        } else if (!preserve_sensitive &&
+                   (header_line_named(cursor, line_length, "Authorization") ||
+                    header_line_named(cursor, line_length, "Cookie") ||
+                    header_line_named_in_list(
+                      cursor, line_length, credential_header_names))) {
+            /* Do not forward credentials to another origin. */
         } else {
             if (line_length + 2 >= capacity - used) {
                 free(output);
@@ -768,6 +812,10 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
     return output;
 }
 
+static char *rewrite_get_request(const char *request, const endpoint *next) {
+    return rewrite_get_request_with_policy(request, next, 1, "");
+}
+
 static int valid_wire_request(const char *request) {
     return strncmp(request, "GET ", 4) == 0 || strncmp(request, "POST ", 5) == 0;
 }
@@ -795,6 +843,7 @@ static int one_request(const endpoint *target, const char *request_headers,
 
 static int send_request(const char *host, int port, const char *request_headers,
                         const char *request_body, int request_body_length, int use_tls,
+                        const char *credential_header_names,
                         const char *body_output_path, const char *metadata_output_path) {
     if (request_body_length < 0 || (request_body_length != 0 && request_body == NULL)) {
         complain("invalid request body length");
@@ -803,6 +852,9 @@ static int send_request(const char *host, int port, const char *request_headers,
     if (!valid_wire_request(request_headers)) {
         complain("transport accepts only GET and POST requests");
         return 2;
+    }
+    if (credential_header_names == NULL) {
+        credential_header_names = "";
     }
 
     int is_get = strncmp(request_headers, "GET ", 4) == 0;
@@ -891,7 +943,10 @@ static int send_request(const char *host, int port, const char *request_headers,
             complain("unsupported redirect location");
             return 8;
         }
-        char *next_request = rewrite_get_request(current_request, &next);
+        char *next_request = same_origin(&current, &next)
+            ? rewrite_get_request(current_request, &next)
+            : rewrite_get_request_with_policy(
+                current_request, &next, 0, credential_header_names);
         if (next_request == NULL) {
             close_connection(&opened);
             free(current_request);
@@ -909,25 +964,65 @@ static int send_request(const char *host, int port, const char *request_headers,
 int icu_send_http(const char *host, int port, const char *request_headers,
                   const char *request_body, int request_body_length) {
     return send_request(host, port, request_headers, request_body, request_body_length,
-                        0, NULL, NULL);
+                        0, "", NULL, NULL);
 }
 
 int icu_send_https(const char *host, int port, const char *request_headers,
                    const char *request_body, int request_body_length) {
     return send_request(host, port, request_headers, request_body, request_body_length,
-                        1, NULL, NULL);
+                        1, "", NULL, NULL);
+}
+
+int icu_send_http_with_credentials(const char *host, int port,
+                                   const char *request_headers,
+                                   const char *request_body,
+                                   int request_body_length,
+                                   const char *credential_header_names) {
+    return send_request(host, port, request_headers, request_body, request_body_length,
+                        0, credential_header_names, NULL, NULL);
+}
+
+int icu_send_https_with_credentials(const char *host, int port,
+                                    const char *request_headers,
+                                    const char *request_body,
+                                    int request_body_length,
+                                    const char *credential_header_names) {
+    return send_request(host, port, request_headers, request_body, request_body_length,
+                        1, credential_header_names, NULL, NULL);
 }
 
 int icu_fetch_http(const char *host, int port, const char *request_headers,
                    const char *request_body, int request_body_length,
                    const char *body_output_path, const char *metadata_output_path) {
     return send_request(host, port, request_headers, request_body, request_body_length,
-                        0, body_output_path, metadata_output_path);
+                        0, "", body_output_path, metadata_output_path);
 }
 
 int icu_fetch_https(const char *host, int port, const char *request_headers,
                     const char *request_body, int request_body_length,
                     const char *body_output_path, const char *metadata_output_path) {
     return send_request(host, port, request_headers, request_body, request_body_length,
-                        1, body_output_path, metadata_output_path);
+                        1, "", body_output_path, metadata_output_path);
+}
+
+int icu_fetch_http_with_credentials(const char *host, int port,
+                                    const char *request_headers,
+                                    const char *request_body,
+                                    int request_body_length,
+                                    const char *body_output_path,
+                                    const char *metadata_output_path,
+                                    const char *credential_header_names) {
+    return send_request(host, port, request_headers, request_body, request_body_length,
+                        0, credential_header_names, body_output_path, metadata_output_path);
+}
+
+int icu_fetch_https_with_credentials(const char *host, int port,
+                                     const char *request_headers,
+                                     const char *request_body,
+                                     int request_body_length,
+                                     const char *body_output_path,
+                                     const char *metadata_output_path,
+                                     const char *credential_header_names) {
+    return send_request(host, port, request_headers, request_body, request_body_length,
+                        1, credential_header_names, body_output_path, metadata_output_path);
 }
