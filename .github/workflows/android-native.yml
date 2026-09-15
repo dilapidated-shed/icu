@@ -43,7 +43,13 @@ jobs:
       - name: Install NDK
         run: |
           test -n "${ANDROID_HOME:-}"
-          yes | sdkmanager "ndk;$ANDROID_NDK_VERSION" >/dev/null
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            sdkmanager=$(find "$ANDROID_HOME/cmdline-tools" -mindepth 2 -maxdepth 3 \
+              -type f -path '*/bin/sdkmanager' -perm -u+x 2>/dev/null | sort -V | tail -n 1)
+          fi
+          test -n "$sdkmanager" && test -x "$sdkmanager"
+          yes | "$sdkmanager" "ndk;$ANDROID_NDK_VERSION" >/dev/null
 
       - name: Cross-build static-OpenSSL JNI transport
         env:
