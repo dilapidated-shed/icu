@@ -46,9 +46,14 @@ dex_backend_ref=${ICU_DEX_BACKEND_REF:-}
   exit 3
 }
 
+output_directory=$(dirname -- "$output")
+output_name=$(basename -- "$output")
+mkdir -p "$output_directory"
+output_directory=$(CDPATH= cd -- "$output_directory" && pwd)
+output="$output_directory/$output_name"
+
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
-mkdir -p "$(dirname -- "$output")"
 
 cp "$dex" "$stage/classes.dex"
 cp "$native_library" "$stage/libicu_transport.so"
