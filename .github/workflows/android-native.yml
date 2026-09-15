@@ -50,13 +50,16 @@ jobs:
           fi
           test -n "$sdkmanager" && test -x "$sdkmanager"
           yes | "$sdkmanager" "ndk;$ANDROID_NDK_VERSION" >/dev/null
+          ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          test -d "$ndk"
+          printf 'ANDROID_NDK_HOME=%s\n' "$ndk" >> "$GITHUB_ENV"
 
       - name: Cross-build static-OpenSSL JNI transport
         env:
           ANDROID_ABI: ${{ matrix.abi }}
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}
           OPENSSL_SOURCE: ${{ github.workspace }}/.tools/openssl
         run: |
+          mkdir -p "build/android/${ANDROID_ABI}"
           bash android/build-native.sh \
             "build/android/${ANDROID_ABI}/libicu_transport.so" \
             "$OPENSSL_SOURCE" | tee "build/android/${ANDROID_ABI}/build-receipt.txt"
