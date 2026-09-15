@@ -32,8 +32,7 @@ static int clear_exception(JNIEnv *env, const char *stage) {
 /*
  * JNI's GetStringUTFChars uses modified UTF-8, while ICU's checked Idriç layer
  * computes ordinary UTF-8 byte counts. Ask java.lang.String for ordinary UTF-8
- * bytes so the existing transport ABI continues to receive the bytes described
- * by Network.Types.utf8_byte_length.
+ * bytes so the existing transport ABI receives exactly those bytes.
  */
 static int copy_java_utf8(JNIEnv *env, jstring value,
                           unsigned char **result, jsize *result_length) {
@@ -98,8 +97,15 @@ static int copy_java_utf8(JNIEnv *env, jstring value,
     return 1;
 }
 
-static void native_capture_arguments(JNIEnv *env, jclass cls,
-                                     jobjectArray arguments) {
+/*
+ * app_process gives main only the arguments after the class name. System.getArgs
+ * expects argv[0], so the bridge supplies one synthetic argv[0] followed by the
+ * exact Java String values. Main.main still discards argv[0] and performs the
+ * real ICU command parsing in checked Idriç.
+ */
+JNIEXPORT void JNICALL
+Java_Idric_Generated_captureArguments(JNIEnv *env, jclass cls,
+                                      jobjectArray arguments) {
     (void)cls;
     if (arguments == NULL) {
         bridge_abort("app_process supplied no argument array");
@@ -114,13 +120,8 @@ static void native_capture_arguments(JNIEnv *env, jclass cls,
     captured_arguments = saved;
 }
 
-/*
- * System.getArgs on the checked Idriç path expects argv[0]. app_process gives
- * main only the arguments after the class name, so expose one synthetic argv[0]
- * followed by those exact Java String values. Main.main itself still discards
- * argv[0] and performs the real command parsing.
- */
-static jint native_argument_count(JNIEnv *env, jclass cls) {
+JNIEXPORT jint JNICALL
+Java_Idric_Generated_idricArgumentCount(JNIEnv *env, jclass cls) {
     (void)cls;
     if (captured_arguments == NULL) {
         bridge_abort("arguments were read before captureArguments");
@@ -132,7 +133,8 @@ static jint native_argument_count(JNIEnv *env, jclass cls) {
     return count + 1;
 }
 
-static jstring native_argument(JNIEnv *env, jclass cls, jint index) {
+JNIEXPORT jstring JNICALL
+Java_Idric_Generated_idricArgument(JNIEnv *env, jclass cls, jint index) {
     (void)cls;
     if (captured_arguments == NULL) {
         bridge_abort("arguments were read before captureArguments");
@@ -158,7 +160,8 @@ static jstring native_argument(JNIEnv *env, jclass cls, jint index) {
     return value;
 }
 
-static void native_put_string(JNIEnv *env, jclass cls, jstring text) {
+JNIEXPORT void JNICALL
+Java_Idric_Generated_idricPutString(JNIEnv *env, jclass cls, jstring text) {
     (void)cls;
     unsigned char *bytes = NULL;
     jsize length = 0;
@@ -174,7 +177,8 @@ static void native_put_string(JNIEnv *env, jclass cls, jstring text) {
     fflush(stdout);
 }
 
-static void native_exit(JNIEnv *env, jclass cls, jint status) {
+JNIEXPORT void JNICALL
+Java_Idric_Generated_idricExit(JNIEnv *env, jclass cls, jint status) {
     (void)env;
     (void)cls;
     fflush(NULL);
@@ -231,49 +235,18 @@ done:
     return result;
 }
 
-static jint native_send_http(JNIEnv *env, jclass cls, jstring host, jint port,
-                             jstring head, jstring body, jint body_length) {
+JNIEXPORT jint JNICALL
+Java_Idric_Generated_icuSendHttp(JNIEnv *env, jclass cls, jstring host,
+                                 jint port, jstring head, jstring body,
+                                 jint body_length) {
     (void)cls;
     return send(env, host, port, head, body, body_length, 0);
 }
 
-static jint native_send_https(JNIEnv *env, jclass cls, jstring host, jint port,
-                              jstring head, jstring body, jint body_length) {
+JNIEXPORT jint JNICALL
+Java_Idric_Generated_icuSendHttps(JNIEnv *env, jclass cls, jstring host,
+                                  jint port, jstring head, jstring body,
+                                  jint body_length) {
     (void)cls;
     return send(env, host, port, head, body, body_length, 1);
-}
-
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
-    (void)reserved;
-    JNIEnv *env = NULL;
-    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK || env == NULL) {
-        return JNI_ERR;
-    }
-
-    jclass generated = (*env)->FindClass(env, "Idric/Generated");
-    if (generated == NULL || !clear_exception(env, "finding Idric.Generated")) {
-        return JNI_ERR;
-    }
-
-    static const JNINativeMethod methods[] = {
-        {"captureArguments", "([Ljava/lang/String;)V", (void *)native_capture_arguments},
-        {"idricArgumentCount", "()I", (void *)native_argument_count},
-        {"idricArgument", "(I)Ljava/lang/String;", (void *)native_argument},
-        {"idricPutString", "(Ljava/lang/String;)V", (void *)native_put_string},
-        {"idricExit", "(I)V", (void *)native_exit},
-        {"icuSendHttp", "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;I)I",
-         (void *)native_send_http},
-        {"icuSendHttps", "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;I)I",
-         (void *)native_send_https},
-    };
-
-    if ((*env)->RegisterNatives(
-            env, generated, methods,
-            (jint)(sizeof(methods) / sizeof(methods[0]))) != JNI_OK ||
-        !clear_exception(env, "registering native methods")) {
-        (*env)->DeleteLocalRef(env, generated);
-        return JNI_ERR;
-    }
-    (*env)->DeleteLocalRef(env, generated);
-    return JNI_VERSION_1_6;
 }
