@@ -19,22 +19,22 @@ case "$abi" in
 esac
 
 ndk=${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}
-[ -n "$ndk" ] && [ -d "$ndk" ] || {
+if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
   printf '%s\n' 'ANDROID_NDK_HOME/ANDROID_NDK_ROOT is required' >&2
   exit 1
-}
-[ -f "$source_root/Configure" ] || {
+fi
+if [ ! -f "$source_root/Configure" ]; then
   printf 'OpenSSL Configure not found under %s\n' "$source_root" >&2
   exit 1
-}
+fi
 
 if [ -n "$expected_ref" ]; then
   actual_ref=$(git -C "$source_root" rev-parse HEAD)
-  [ "$actual_ref" = "$expected_ref" ] || {
+  if [ "$actual_ref" != "$expected_ref" ]; then
     printf 'OpenSSL source mismatch: expected %s, found %s\n' \
       "$expected_ref" "$actual_ref" >&2
     exit 1
-  }
+  fi
 fi
 
 ndk_bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -46,7 +46,9 @@ mkdir -p "$output_prefix"
 
 (
   cd "$source_root"
-  make clean >/dev/null 2>&1 || true
+  if [ -f Makefile ]; then
+    make clean
+  fi
   ./Configure "$configure_target" \
     -D__ANDROID_API__="$api" \
     no-shared no-tests no-apps no-docs \
