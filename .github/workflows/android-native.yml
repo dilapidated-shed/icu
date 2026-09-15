@@ -1,0 +1,93 @@
+name: Android native transport
+
+on:
+  push:
+    branches:
+      - android/dex-jni-phone
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_API: 24
+  ANDROID_NDK_VERSION: 27.3.13750724
+  OPENSSL_REF: f4dc4d58b48d346a8270183f89acf826d459b0ca
+
+jobs:
+  native-transport:
+    name: NDK/JNI transport / ${{ matrix.abi }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi:
+          - armeabi-v7a
+          - x86_64
+    steps:
+      - name: Check out ICU
+        uses: actions/checkout@v4
+
+      - name: Check out pinned OpenSSL 3.5.8
+        uses: actions/checkout@v4
+        with:
+          repository: openssl/openssl
+          ref: ${{ env.OPENSSL_REF }}
+          path: .tools/openssl
+          persist-credentials: false
+
+      - name: Confirm pinned OpenSSL revision
+        run: test "$(git -C .tools/openssl rev-parse HEAD)" = "$OPENSSL_REF"
+
+      - name: Install NDK
+        run: |
+          test -n "${ANDROID_HOME:-}"
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            sdkmanager=$(find "$ANDROID_HOME/cmdline-tools" -mindepth 2 -maxdepth 3 \
+              -type f -path '*/bin/sdkmanager' -perm -u+x 2>/dev/null | sort -V | tail -n 1)
+          fi
+          test -n "$sdkmanager" && test -x "$sdkmanager"
+          yes | "$sdkmanager" "ndk;$ANDROID_NDK_VERSION" >/dev/null
+          ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          test -d "$ndk"
+          printf 'ANDROID_NDK_HOME=%s\n' "$ndk" >> "$GITHUB_ENV"
+
+      - name: Cross-build static-OpenSSL JNI transport
+        env:
+          ANDROID_ABI: ${{ matrix.abi }}
+          OPENSSL_SOURCE: ${{ github.workspace }}/.tools/openssl
+        run: |
+          mkdir -p "build/android/${ANDROID_ABI}"
+          bash android/build-native.sh \
+            "build/android/${ANDROID_ABI}/libicu_transport.so" \
+            "$OPENSSL_SOURCE" | tee "build/android/${ANDROID_ABI}/build-receipt.txt"
+
+      - name: Record immutable native receipt
+        env:
+          ANDROID_ABI: ${{ matrix.abi }}
+        run: |
+          library="build/android/${ANDROID_ABI}/libicu_transport.so"
+          {
+            printf 'icu_source_ref\t%s\n' "$GITHUB_SHA"
+            printf 'openssl_source_ref\t%s\n' "$OPENSSL_REF"
+            printf 'android_ndk\t%s\n' "$ANDROID_NDK_VERSION"
+            printf 'android_api\t%s\n' "$ANDROID_API"
+            printf 'abi\t%s\n' "$ANDROID_ABI"
+            printf 'sha256\t%s\n' "$(sha256sum "$library" | cut -d' ' -f1)"
+            printf 'dex_result\tNOT_VERIFIED\n'
+            printf 'jni_build_result\tPASS\n'
+            printf 'physical_device_result\tNOT_VERIFIED\n'
+          } > "build/android/${ANDROID_ABI}/native-receipt.tsv"
+          cat "build/android/${ANDROID_ABI}/native-receipt.tsv"
+
+      - name: Retain runtime-only native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: icu-native-${{ matrix.abi }}
+          path: |
+            build/android/${{ matrix.abi }}/libicu_transport.so
+            build/android/${{ matrix.abi }}/build-receipt.txt
+            build/android/${{ matrix.abi }}/native-receipt.tsv
+          if-no-files-found: error
