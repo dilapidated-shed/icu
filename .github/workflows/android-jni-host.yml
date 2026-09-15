@@ -1,0 +1,47 @@
+name: Android JNI host boundary
+
+on:
+  pull_request:
+    paths:
+      - 'native/android_jni.c'
+      - 'android/**'
+      - '.github/workflows/android-jni-host.yml'
+  push:
+    branches:
+      - android/dex-jni-emulator-slice
+
+jobs:
+  host-boundary:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Check Android helper syntax
+        run: |
+          sh -n android/build-openssl.sh
+          sh -n android/build-jni.sh
+
+      - name: Compile JNI seam with warnings fatal
+        run: |
+          test -f "$JAVA_HOME/include/jni.h"
+          cc -std=c11 -Wall -Wextra -Wpedantic -Werror \
+            -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+            -c native/android_jni.c -o /tmp/icu-android-jni.o
+
+      - name: Verify narrow exported JNI surface
+        run: |
+          nm -g --defined-only /tmp/icu-android-jni.o > /tmp/icu-android-jni.symbols
+          cat /tmp/icu-android-jni.symbols
+          for symbol in \
+            Java_Idric_Generated_captureArguments \
+            Java_Idric_Generated_idricArgumentCount \
+            Java_Idric_Generated_idricArgument \
+            Java_Idric_Generated_idricPutString \
+            Java_Idric_Generated_idricExit \
+            Java_Idric_Generated_icuSendHttp \
+            Java_Idric_Generated_icuSendHttps
+          do
+            grep -F " $symbol" /tmp/icu-android-jni.symbols >/dev/null
+          done
+          test "$(grep -c ' Java_Idric_Generated_' /tmp/icu-android-jni.symbols)" -eq 7
