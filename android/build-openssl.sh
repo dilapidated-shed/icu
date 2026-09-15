@@ -53,7 +53,8 @@ mkdir -p "$output_prefix"
     -D__ANDROID_API__="$api" \
     no-shared no-tests no-apps no-docs \
     --prefix="$output_prefix" \
-    --openssldir="$output_prefix/ssl"
+    --openssldir="$output_prefix/ssl" \
+    --libdir=lib
   make -j2
   make install_sw
 )
