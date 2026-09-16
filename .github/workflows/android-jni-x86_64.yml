@@ -38,10 +38,11 @@ jobs:
 
       - name: Cross-build exact OpenSSL for emulator
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
           ANDROID_ABI: x86_64
           ANDROID_API: 24
         run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$ANDROID_NDK_HOME"
           OPENSSL_REF="$OPENSSL_REF" \
             sh icu/android/build-openssl.sh \
               "$GITHUB_WORKSPACE/openssl" \
@@ -49,11 +50,12 @@ jobs:
 
       - name: Cross-build ICU JNI transport for emulator
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
           ANDROID_ABI: x86_64
           ANDROID_API: 24
           OPENSSL_ROOT: ${{ github.workspace }}/build/openssl-x86_64
         run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$ANDROID_NDK_HOME"
           sh icu/android/build-jni.sh \
             "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.so"
           file "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.so"
