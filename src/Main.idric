@@ -48,6 +48,7 @@ run arguments =
         Left problem => fail_with problem
         Right result => exitWith (exit_code result)
 
+%export "dex:icu_checked_main"
 main : IO ()
 main = do
   arguments ← getArgs
