@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - android/dex-jni-phone
+      - android/catfood-package
   pull_request:
   workflow_dispatch:
 
@@ -13,6 +14,7 @@ permissions:
 env:
   ANDROID_API: 24
   ANDROID_NDK_VERSION: 27.3.13750724
+  ANDROID_BUILD_TOOLS_VERSION: 35.0.0
   OPENSSL_REF: f4dc4d58b48d346a8270183f89acf826d459b0ca
 
 jobs:
@@ -40,7 +42,7 @@ jobs:
       - name: Confirm pinned OpenSSL revision
         run: test "$(git -C .tools/openssl rev-parse HEAD)" = "$OPENSSL_REF"
 
-      - name: Install NDK
+      - name: Install Android build inputs
         run: |
           test -n "${ANDROID_HOME:-}"
           sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -49,10 +51,16 @@ jobs:
               -type f -path '*/bin/sdkmanager' -perm -u+x 2>/dev/null | sort -V | tail -n 1)
           fi
           test -n "$sdkmanager" && test -x "$sdkmanager"
-          yes | "$sdkmanager" "ndk;$ANDROID_NDK_VERSION" >/dev/null
+          yes | "$sdkmanager" \
+            "ndk;$ANDROID_NDK_VERSION" \
+            "build-tools;$ANDROID_BUILD_TOOLS_VERSION" >/dev/null
           ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          build_tools="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION"
           test -d "$ndk"
+          test -x "$build_tools/d8"
+          test -x "$build_tools/dexdump"
           printf 'ANDROID_NDK_HOME=%s\n' "$ndk" >> "$GITHUB_ENV"
+          printf 'ANDROID_BUILD_TOOLS=%s\n' "$build_tools" >> "$GITHUB_ENV"
 
       - name: Cross-build static-OpenSSL JNI transport
         env:
@@ -63,6 +71,124 @@ jobs:
           bash android/build-native.sh \
             "build/android/${ANDROID_ABI}/libicu_transport.so" \
             "$OPENSSL_SOURCE" | tee "build/android/${ANDROID_ABI}/build-receipt.txt"
+
+      - name: Exercise fail-closed Cat Food packager
+        if: matrix.abi == 'armeabi-v7a'
+        run: |
+          fixture_root="$RUNNER_TEMP/icu-catfood-package"
+          rm -rf "$fixture_root"
+          mkdir -p \
+            "$fixture_root/src/Idric" \
+            "$fixture_root/src/Wrong" \
+            "$fixture_root/classes" \
+            "$fixture_root/good-dex" \
+            "$fixture_root/wrong-dex" \
+            "$fixture_root/unpacked"
+
+          cat > "$fixture_root/src/Idric/Generated.java" <<'JAVA'
+          package Idric;
+          public final class Generated {
+            private Generated() {}
+            public static void main(String[] arguments) {}
+          }
+          JAVA
+
+          cat > "$fixture_root/src/Wrong/Generated.java" <<'JAVA'
+          package Wrong;
+          public final class Generated {
+            private Generated() {}
+            public static void main(String[] arguments) {}
+          }
+          JAVA
+
+          javac --release 8 -d "$fixture_root/classes" \
+            "$fixture_root/src/Idric/Generated.java" \
+            "$fixture_root/src/Wrong/Generated.java"
+
+          "$ANDROID_BUILD_TOOLS/d8" --min-api 21 \
+            --output "$fixture_root/good-dex" \
+            "$fixture_root/classes/Idric/Generated.class"
+          "$ANDROID_BUILD_TOOLS/d8" --min-api 21 \
+            --output "$fixture_root/wrong-dex" \
+            "$fixture_root/classes/Wrong/Generated.class"
+
+          arm_library="build/android/armeabi-v7a/libicu_transport.so"
+          backend_fixture_ref=1111111111111111111111111111111111111111
+          package="$fixture_root/icu-phone.tar.gz"
+
+          DEXDUMP="$ANDROID_BUILD_TOOLS/dexdump" \
+          ICU_SOURCE_REF="$GITHUB_SHA" \
+          ICU_PACKAGE_REF="$GITHUB_SHA" \
+          ICU_DEX_BACKEND_REF="$backend_fixture_ref" \
+            bash android/package-catfood.sh \
+              "$fixture_root/good-dex/classes.dex" \
+              "$arm_library" \
+              "$package"
+
+          tar -xzf "$package" -C "$fixture_root/unpacked"
+          (
+            cd "$fixture_root/unpacked"
+            sha256sum -c payload.sha256
+            grep -Fx $'target\tphone' catfood-package.tsv
+            grep -Fx $'abi\tarmeabi-v7a' catfood-package.tsv
+            grep -Fx $'main_class\tIdric.Generated' catfood-package.tsv
+            grep -Fx $'physical_device_result\tNOT_VERIFIED' catfood-package.tsv
+            grep -Fx "dex_backend_ref"$'\t'"$backend_fixture_ref" catfood-package.tsv
+          )
+
+          if DEXDUMP="$ANDROID_BUILD_TOOLS/dexdump" \
+              ICU_SOURCE_REF="$GITHUB_SHA" \
+              ICU_PACKAGE_REF="$GITHUB_SHA" \
+              ICU_DEX_BACKEND_REF="$backend_fixture_ref" \
+              bash android/package-catfood.sh \
+                "$fixture_root/wrong-dex/classes.dex" \
+                "$arm_library" \
+                "$fixture_root/wrong-class.tar.gz"; then
+            echo 'packager accepted a DEX without Idric.Generated' >&2
+            exit 1
+          fi
+
+          printf 'not a dex\n' > "$fixture_root/not.dex"
+          if DEXDUMP="$ANDROID_BUILD_TOOLS/dexdump" \
+              ICU_SOURCE_REF="$GITHUB_SHA" \
+              ICU_PACKAGE_REF="$GITHUB_SHA" \
+              ICU_DEX_BACKEND_REF="$backend_fixture_ref" \
+              bash android/package-catfood.sh \
+                "$fixture_root/not.dex" \
+                "$arm_library" \
+                "$fixture_root/not-dex.tar.gz"; then
+            echo 'packager accepted a non-DEX input' >&2
+            exit 1
+          fi
+
+          if DEXDUMP="$ANDROID_BUILD_TOOLS/dexdump" \
+              ICU_SOURCE_REF="$GITHUB_SHA" \
+              ICU_PACKAGE_REF="$GITHUB_SHA" \
+              ICU_DEX_BACKEND_REF="$backend_fixture_ref" \
+              bash android/package-catfood.sh \
+                "$fixture_root/good-dex/classes.dex" \
+                /bin/true \
+                "$fixture_root/non-arm.tar.gz"; then
+            echo 'packager accepted a non-ARM native library' >&2
+            exit 1
+          fi
+
+          if DEXDUMP="$ANDROID_BUILD_TOOLS/dexdump" \
+              ICU_SOURCE_REF="$GITHUB_SHA" \
+              ICU_PACKAGE_REF="$GITHUB_SHA" \
+              env -u ICU_DEX_BACKEND_REF \
+              bash android/package-catfood.sh \
+                "$fixture_root/good-dex/classes.dex" \
+                "$arm_library" \
+                "$fixture_root/missing-ref.tar.gz"; then
+            echo 'packager accepted a missing DEX producer revision' >&2
+            exit 1
+          fi
+
+          printf '%s\n' \
+            'TEST_ONLY_DEX_FIXTURE 1' \
+            'production_dex_acceptance=NOT_VERIFIED' \
+            'physical_device_result=NOT_VERIFIED'
 
       - name: Record immutable native receipt
         env:
