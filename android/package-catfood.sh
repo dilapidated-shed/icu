@@ -21,6 +21,34 @@ magic=$(od -An -t x1 -N8 "$dex" | tr -d ' \n')
   exit 3
 }
 
+dexdump=${DEXDUMP:-}
+if [[ -z $dexdump ]] && command -v dexdump >/dev/null 2>&1; then
+  dexdump=$(command -v dexdump)
+fi
+if [[ -z $dexdump ]]; then
+  android_home=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+  if [[ -n $android_home && -d $android_home/build-tools ]]; then
+    dexdump=$(find "$android_home/build-tools" -mindepth 2 -maxdepth 2 \
+      -type f -name dexdump -perm -u+x 2>/dev/null | sort -V | tail -n 1)
+  fi
+fi
+[[ -n $dexdump && -x $dexdump ]] || {
+  echo 'ICU Cat Food packaging requires dexdump to validate classes.dex' >&2
+  exit 3
+}
+
+dex_dump=$(mktemp)
+trap 'rm -f "$dex_dump"' EXIT
+if ! "$dexdump" "$dex" >"$dex_dump" 2>&1; then
+  cat "$dex_dump" >&2
+  echo 'ICU Cat Food packaging rejected an invalid DEX file' >&2
+  exit 3
+fi
+if ! grep -F "Class descriptor  : 'LIdric/Generated;'" "$dex_dump" >/dev/null; then
+  echo 'ICU Cat Food packaging requires the direct-DEX Idric.Generated class' >&2
+  exit 3
+fi
+
 machine=$(readelf -h "$native_library" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')
 case "$machine" in
   ARM) ;;
@@ -53,7 +81,7 @@ output_directory=$(CDPATH= cd -- "$output_directory" && pwd)
 output="$output_directory/$output_name"
 
 stage=$(mktemp -d)
-trap 'rm -rf "$stage"' EXIT
+trap 'rm -f "$dex_dump"; rm -rf "$stage"' EXIT
 
 cp "$dex" "$stage/classes.dex"
 cp "$native_library" "$stage/libicu_transport.so"
@@ -67,7 +95,7 @@ native_sha=$(sha256sum "$stage/libicu_transport.so" | cut -d' ' -f1)
   printf 'source_ref\t%s\n' "$source_ref"
   printf 'package_ref\t%s\n' "$package_ref"
   printf 'dex_backend_ref\t%s\n' "$dex_backend_ref"
-  printf 'main_class\torg.isomorphisms.icu.ICU\n'
+  printf 'main_class\tIdric.Generated\n'
   printf 'jni_library\tlibicu_transport.so\n'
   printf 'jni_property\ticu.library\n'
   printf 'dex_sha256\t%s\n' "$dex_sha"
