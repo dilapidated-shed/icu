@@ -16,6 +16,14 @@ primitive_send_http : String → Int → String → String → Int → PrimIO In
 %foreign "C:icu_send_https,libicu_transport"
 primitive_send_https : String → Int → String → String → Int → PrimIO Int
 
+%foreign "C:icu_send_http_with_credentials,libicu_transport"
+primitive_send_http_with_credentials :
+  String → Int → String → String → Int → String → PrimIO Int
+
+%foreign "C:icu_send_https_with_credentials,libicu_transport"
+primitive_send_https_with_credentials :
+  String → Int → String → String → Int → String → PrimIO Int
+
 prepare_request : request → RenderedRequest
 
 send_prepared_request :
@@ -23,7 +31,16 @@ send_prepared_request :
   RenderedRequest →
   IO (Either String transport_result)
 
+send_prepared_request_with_credentials :
+  url →
+  RenderedRequest →
+  String →
+  IO (Either String transport_result)
+
 send_to_destination : url → RenderedRequest → IO Int
+
+send_to_destination_with_credentials :
+  url → RenderedRequest → String → IO Int
 
 understand_transport_result : Int → Either String transport_result
 
@@ -39,7 +56,39 @@ send_using_https :
   RenderedRequest →
   IO Int
 
+send_using_http_with_credentials :
+  HostName →
+  DestinationPort →
+  RenderedRequest →
+  String →
+  IO Int
+
+send_using_https_with_credentials :
+  HostName →
+  DestinationPort →
+  RenderedRequest →
+  String →
+  IO Int
+
 run_transport_primitive : PrimIO Int → IO Int
+
+credential_names_text : List HeaderName → String
+credential_names_text [] = ""
+credential_names_text (name :: rest) =
+  header_name_text name ++ "\n" ++ credential_names_text rest
+
+public export
+send_request_with_headers :
+  request → List request_header → IO (Either String transport_result)
+send_request_with_headers value headers =
+  case render_request_parts_with_headers value headers of
+    Left problem => pure (Left problem)
+    Right prepared_request =>
+      let names = credential_names_text (credential_header_names headers) in
+        send_prepared_request_with_credentials
+          (request_url value)
+          prepared_request
+          names
 
 public export
 send_request : request → IO (Either String transport_result)
@@ -53,6 +102,17 @@ prepare_request value =
 send_prepared_request destination prepared_request = do
   result_code ← send_to_destination destination prepared_request
   pure (understand_transport_result result_code)
+
+send_prepared_request_with_credentials
+  destination
+  prepared_request
+  credential_names = do
+    result_code ←
+      send_to_destination_with_credentials
+        destination
+        prepared_request
+        credential_names
+    pure (understand_transport_result result_code)
 
 understand_transport_result result_code =
   if result_code < 0 || result_code > 255
@@ -75,6 +135,19 @@ send_to_destination
   prepared_request =
     send_using_https name destination_port prepared_request
 
+send_to_destination_with_credentials
+  (http_url name destination_port _)
+  prepared_request
+  credential_names =
+    send_using_http_with_credentials
+      name destination_port prepared_request credential_names
+send_to_destination_with_credentials
+  (https_url name destination_port _)
+  prepared_request
+  credential_names =
+    send_using_https_with_credentials
+      name destination_port prepared_request credential_names
+
 send_using_http name destination_port prepared_request = do
   let host = host_name_string name
   let port = cast (destination_port_number destination_port)
@@ -96,6 +169,38 @@ send_using_https name destination_port prepared_request = do
   let primitive_action =
         primitive_send_https host port request_head request_body body_length
   run_transport_primitive primitive_action
+
+send_using_http_with_credentials
+  name destination_port prepared_request credential_names = do
+    let host = host_name_string name
+    let port = cast (destination_port_number destination_port)
+    let request_head =
+          http_request_head_text (rendered_request_head prepared_request)
+    let request_body =
+          http_body_string (rendered_request_body prepared_request)
+    let body_byte_count =
+          byte_count_number (rendered_request_body_length prepared_request)
+    let body_length = cast body_byte_count
+    let primitive_action =
+          primitive_send_http_with_credentials
+            host port request_head request_body body_length credential_names
+    run_transport_primitive primitive_action
+
+send_using_https_with_credentials
+  name destination_port prepared_request credential_names = do
+    let host = host_name_string name
+    let port = cast (destination_port_number destination_port)
+    let request_head =
+          http_request_head_text (rendered_request_head prepared_request)
+    let request_body =
+          http_body_string (rendered_request_body prepared_request)
+    let body_byte_count =
+          byte_count_number (rendered_request_body_length prepared_request)
+    let body_length = cast body_byte_count
+    let primitive_action =
+          primitive_send_https_with_credentials
+            host port request_head request_body body_length credential_names
+    run_transport_primitive primitive_action
 
 run_transport_primitive primitive_action =
   primIO primitive_action
