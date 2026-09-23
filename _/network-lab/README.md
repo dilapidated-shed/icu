@@ -99,3 +99,24 @@ than these old branches alone:
 - `pr-11.diff` — exact patch for PR #11 at its current head
 
 These are historical evidence, not active source files.
+
+
+## PR #20 — caller-declared credential headers
+
+PR #20 was built on the historical #11 convergence line and also carried the
+earlier response-capture/custom-header stack and an experimental OpenAI client.
+Its exact patch is preserved as `pr-20.diff`.
+
+The current-line reconstruction intentionally separates those concerns:
+
+- checked caller-header and credential metadata belong in Idric-Net;
+- ICU's current native transport enforces same-origin retention and cross-origin
+  credential stripping;
+- the ordinary five-argument ICU transport ABI remains intact for the current
+  Android/JNI path;
+- old response-capture, ingestion, and OpenAI-client code is preserved here but
+  is not reactivated implicitly.
+
+A later reconstruction pass can decide which preserved response-capture and
+ingestion pieces belong in current Idric-Net/ICU without making the old #11
+architecture authoritative again.
