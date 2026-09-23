@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: isomorphisms/Idric-Net
-          ref: 934b9b511cf7407a0d905f5aac3391003cb7aa36
+          ref: 2f6ea92c25c9b5a7286d1ca226fa3d1e12fe303e
           path: .tools/Idric-Net
 
       - name: Install build dependencies
