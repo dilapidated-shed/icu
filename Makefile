@@ -11,9 +11,11 @@ all: libicu_transport.so
 libicu_transport.so: native/transport.c
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $< $(OPENSSL_LIBS)
 
-check-native: native/transport.c
-	$(CC) $(CFLAGS) -Werror -fPIC -shared -o /tmp/icu-transport-check.so $< $(OPENSSL_LIBS)
-	rm -f /tmp/icu-transport-check.so
+check-native: native/transport.c tests/RedirectPolicyTests.c
+	$(CC) $(CFLAGS) -Werror -fPIC -shared -o /tmp/icu-transport-check.so native/transport.c $(OPENSSL_LIBS)
+	$(CC) $(CFLAGS) -Werror -o /tmp/icu-redirect-policy tests/RedirectPolicyTests.c $(OPENSSL_LIBS)
+	/tmp/icu-redirect-policy
+	rm -f /tmp/icu-transport-check.so /tmp/icu-redirect-policy
 
 clean:
 	rm -rf build libicu_transport.so
