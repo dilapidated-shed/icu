@@ -79,6 +79,13 @@ are rewritten for the new endpoint. Cross-scheme redirects reselect plain TCP
 or verified TLS from the destination. POST redirects are deliberately not
 followed yet because 301/302/303 method rewriting needs an explicit Idriç policy.
 
+The library transport surface also accepts checked caller headers from Idric-Net.
+A caller may mark an arbitrary header as credential-sensitive without changing
+its wire spelling. Same-origin redirects retain those headers. When scheme,
+host, or port changes, ICU strips `Authorization`, `Cookie`, and every
+caller-declared credential header while retaining unrelated custom headers.
+The command-line surface does not yet expose a general authentication command.
+
 Response bodies are binary-safe: an image can be fetched directly to a file,
 for example:
 
