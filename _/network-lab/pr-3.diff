@@ -1,0 +1,893 @@
+diff --git a/.github/workflows/idric-end-to-end.yml b/.github/workflows/idric-end-to-end.yml
+index 914eae7e4b05..abf4e27f9353 100644
+--- a/.github/workflows/idric-end-to-end.yml
++++ b/.github/workflows/idric-end-to-end.yml
+@@ -45,6 +45,13 @@ jobs:
+           "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
+           ./build/exec/icu-http-tests
+ 
++      - name: Compare C and Idric transport models
++        env:
++          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
++        run: |
++          make check-transport-model \
++            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
++
+       - name: Start deterministic HTTP and HTTPS servers
+         run: |
+           mkdir -p "$RUNNER_TEMP/icu-tls"
+diff --git a/Makefile b/Makefile
+index bc179724c538..f694ebfacdd6 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@ CC ?= cc
+ CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic
+ OPENSSL_LIBS ?= -lssl -lcrypto
+ 
+-.PHONY: all clean check-native
++.PHONY: all clean check-native check-transport-model
+ 
+ all: libicu_transport.so
+ 	$(IDRIC) --build icu.ipkg
+@@ -15,5 +15,15 @@ check-native: native/transport.c
+ 	$(CC) $(CFLAGS) -Werror -fPIC -shared -o /tmp/icu-transport-check.so $< $(OPENSSL_LIBS)
+ 	rm -f /tmp/icu-transport-check.so
+ 
++check-transport-model: tests/transport_model_oracle.c tests/TransportModelOracle.idric \
++		tests/transport-fixtures.json tests/check_transport_equivalence.py
++	mkdir -p build/tests
++	$(CC) $(CFLAGS) -Werror -o build/tests/transport-model-c \
++		tests/transport_model_oracle.c $(OPENSSL_LIBS)
++	$(IDRIC) tests/TransportModelOracle.idric \
++		-o transport-model-idric
++	python3 tests/check_transport_equivalence.py \
++		build/tests/transport-model-c build/exec/transport-model-idric
++
+ clean:
+ 	rm -rf build libicu_transport.so
+diff --git a/README.md b/README.md
+index f159f5746728..e9bec9f6d540 100644
+--- a/README.md
++++ b/README.md
+@@ -34,6 +34,11 @@ choice request one_of
+ `src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
+ `native/transport.c` owns sockets, OpenSSL, response framing, and the small
+ amount of response-header handling needed to keep GET useful on the web.
++`src/TransportModel.idric` is the side-by-side Idriç translation of the pure
++parts of that native transport: status and header parsing, redirect
++classification and resolution, request-target validation, and redirected GET
++rewriting. The live transport still uses the C copies while their equivalence
++boundary is established.
+ `src/Main.idric` owns the tiny command-line grammar.
+ 
+ The C boundary independently refuses wire requests that do not begin with GET
+@@ -107,6 +112,14 @@ repo-local transport library:
+ `make check-native` compiles the native boundary with warnings promoted to
+ errors.
+ 
++`make check-transport-model` runs every case in
++`tests/transport-fixtures.json` through a C oracle built directly from
++`native/transport.c` and through the Idriç model, then compares exit status,
++stdout, and stderr byte-for-byte. Fixtures cover valid and malformed status
++lines, case-insensitive and empty redirect headers, redirect status codes,
++visible-ASCII validation, request targets, five supported redirect forms,
++rejected authorities and ports, and Host-header rewriting.
++
+ ## Reference source
+ 
+ `old/` is the complete previous repository tree, currently curl at commit
+diff --git a/icu.ipkg b/icu.ipkg
+index 15592ecd6bc8..75ff05137b76 100644
+--- a/icu.ipkg
++++ b/icu.ipkg
+@@ -3,6 +3,6 @@ package icu
+ version = 0.1.0
+ sourcedir = "src"
+ 
+-modules = Http, Transport, Main
++modules = Http, TransportModel, Transport, Main
+ main = Main
+ executable = icu
+diff --git a/src/TransportModel.idric b/src/TransportModel.idric
+new file mode 100644
+index 000000000000..23c91fecc6c4
+--- /dev/null
++++ b/src/TransportModel.idric
+@@ -0,0 +1,380 @@
++module TransportModel
++
++%default total
++
++public export
++choice transport_endpoint one_of
++  endpoint Bool Int String String
++
++public export
++endpoint_tls : transport_endpoint → Bool
++endpoint_tls (endpoint use_tls _ _ _) = use_tls
++
++public export
++endpoint_port : transport_endpoint → Int
++endpoint_port (endpoint _ port_number _ _) = port_number
++
++public export
++endpoint_host : transport_endpoint → String
++endpoint_host (endpoint _ _ host_name _) = host_name
++
++public export
++endpoint_target : transport_endpoint → String
++endpoint_target (endpoint _ _ _ request_target) = request_target
++
++ascii_lower : Char → Char
++ascii_lower 'A' = 'a'
++ascii_lower 'B' = 'b'
++ascii_lower 'C' = 'c'
++ascii_lower 'D' = 'd'
++ascii_lower 'E' = 'e'
++ascii_lower 'F' = 'f'
++ascii_lower 'G' = 'g'
++ascii_lower 'H' = 'h'
++ascii_lower 'I' = 'i'
++ascii_lower 'J' = 'j'
++ascii_lower 'K' = 'k'
++ascii_lower 'L' = 'l'
++ascii_lower 'M' = 'm'
++ascii_lower 'N' = 'n'
++ascii_lower 'O' = 'o'
++ascii_lower 'P' = 'p'
++ascii_lower 'Q' = 'q'
++ascii_lower 'R' = 'r'
++ascii_lower 'S' = 's'
++ascii_lower 'T' = 't'
++ascii_lower 'U' = 'u'
++ascii_lower 'V' = 'v'
++ascii_lower 'W' = 'w'
++ascii_lower 'X' = 'x'
++ascii_lower 'Y' = 'y'
++ascii_lower 'Z' = 'z'
++ascii_lower character = character
++
++ascii_equal : List Char → List Char → Bool
++ascii_equal [] [] = True
++ascii_equal [] _ = False
++ascii_equal _ [] = False
++ascii_equal (left :: remaining_left) (right :: remaining_right) =
++  ascii_lower left == ascii_lower right &&
++  ascii_equal remaining_left remaining_right
++
++strip_prefix : List Char → List Char → Maybe (List Char)
++strip_prefix [] input = Just input
++strip_prefix _ [] = Nothing
++strip_prefix (expected :: remaining_prefix) (actual :: input) =
++  if expected == actual
++    then strip_prefix remaining_prefix input
++    else Nothing
++
++strip_prefix_ascii : List Char → List Char → Maybe (List Char)
++strip_prefix_ascii [] input = Just input
++strip_prefix_ascii _ [] = Nothing
++strip_prefix_ascii (expected :: remaining_prefix) (actual :: input) =
++  if ascii_lower expected == ascii_lower actual
++    then strip_prefix_ascii remaining_prefix input
++    else Nothing
++
++take_line : List Char → (List Char, List Char)
++take_line [] = ([], [])
++take_line ('\n' :: rest) = ([], rest)
++take_line (character :: rest) =
++  let (line, remaining) = take_line rest in
++    (character :: line, remaining)
++
++drop_final_cr : List Char → List Char
++drop_final_cr characters =
++  case reverse characters of
++    '\r' :: rest => reverse rest
++    _ => characters
++
++drop_horizontal_space : List Char → List Char
++drop_horizontal_space (' ' :: rest) = drop_horizontal_space rest
++drop_horizontal_space ('\t' :: rest) = drop_horizontal_space rest
++drop_horizontal_space characters = characters
++
++trim_horizontal_space : List Char → List Char
++trim_horizontal_space characters =
++  reverse (drop_horizontal_space (reverse (drop_horizontal_space characters)))
++
++split_first : Char → List Char → Maybe (List Char, List Char)
++split_first _ [] = Nothing
++split_first wanted (character :: rest) =
++  if character == wanted
++    then Just ([], rest)
++    else case split_first wanted rest of
++      Nothing => Nothing
++      Just (before, after) => Just (character :: before, after)
++
++split_last : Char → List Char → Maybe (List Char, List Char)
++split_last wanted characters =
++  case split_first wanted (reverse characters) of
++    Nothing => Nothing
++    Just (after_reversed, before_reversed) =>
++      Just (reverse before_reversed, reverse after_reversed)
++
++digit_value : Char → Maybe Int
++digit_value '0' = Just 0
++digit_value '1' = Just 1
++digit_value '2' = Just 2
++digit_value '3' = Just 3
++digit_value '4' = Just 4
++digit_value '5' = Just 5
++digit_value '6' = Just 6
++digit_value '7' = Just 7
++digit_value '8' = Just 8
++digit_value '9' = Just 9
++digit_value _ = Nothing
++
++public export
++parse_status : String → Maybe Int
++parse_status headers =
++  let (first_line, _) = take_line (unpack headers) in
++    case split_first ' ' first_line of
++      Just (_, first :: second :: third :: _) =>
++        case (digit_value first, digit_value second, digit_value third) of
++          (Just hundreds, Just tens, Just ones) =>
++            Just (hundreds * 100 + tens * 10 + ones)
++          _ => Nothing
++      _ => Nothing
++
++find_header : List Char → List Char → Maybe String
++find_header _ [] = Nothing
++find_header wanted input =
++  let (raw_line, remaining) = take_line input
++      line = drop_final_cr raw_line
++  in case line of
++    [] => Nothing
++    _ =>
++      case split_first ':' line of
++        Just (name, raw_value) =>
++          let value = trim_horizontal_space raw_value in
++            if ascii_equal wanted name
++              then if value /= [] && length value < 4096
++                then Just (pack value)
++                else Nothing
++              else find_header wanted (assert_smaller input remaining)
++        Nothing => find_header wanted (assert_smaller input remaining)
++
++public export
++header_value : String → String → Maybe String
++header_value headers wanted =
++  let (_, after_status) = take_line (unpack headers) in
++    find_header (unpack wanted) after_status
++
++public export
++redirect_status : Int → Bool
++redirect_status status =
++  status == 301 || status == 302 || status == 303 ||
++  status == 307 || status == 308
++
++visible_url_characters : List Char → Bool
++visible_url_characters [] = True
++visible_url_characters (character :: rest) =
++  ord character > 32 && ord character < 127 && visible_url_characters rest
++
++public export
++visible_url : String → Bool
++visible_url = visible_url_characters . unpack
++
++drop_fragment_characters : List Char → List Char
++drop_fragment_characters [] = []
++drop_fragment_characters ('#' :: _) = []
++drop_fragment_characters (character :: rest) =
++  character :: drop_fragment_characters rest
++
++parse_port_characters : Int → List Char → Maybe Int
++parse_port_characters accumulated [] =
++  if accumulated >= 1 && accumulated <= 65535
++    then Just accumulated
++    else Nothing
++parse_port_characters accumulated (character :: rest) =
++  case digit_value character of
++    Nothing => Nothing
++    Just digit =>
++      let next = accumulated * 10 + digit in
++        if next > 65535
++          then Nothing
++          else parse_port_characters next rest
++
++parse_port : List Char → Maybe Int
++parse_port [] = Nothing
++parse_port characters = parse_port_characters 0 characters
++
++contains : Char → List Char → Bool
++contains _ [] = False
++contains wanted (character :: rest) =
++  character == wanted || contains wanted rest
++
++parse_authority : List Char → Int → Bool → String → Maybe transport_endpoint
++parse_authority authority default_port use_tls target =
++  if authority == [] || length authority >= 1024 ||
++     contains '@' authority || contains ']' authority
++    then Nothing
++    else case authority of
++      '[' :: _ => Nothing
++      _ =>
++        case split_last ':' authority of
++          Nothing => Just (endpoint use_tls default_port (pack authority) target)
++          Just ([], _) => Nothing
++          Just (host_name, port_text) =>
++            case parse_port port_text of
++              Nothing => Nothing
++              Just port_number =>
++                Just (endpoint use_tls port_number (pack host_name) target)
++
++set_target : transport_endpoint → List Char → Maybe transport_endpoint
++set_target (endpoint use_tls port_number host_name _) [] =
++  Just (endpoint use_tls port_number host_name "/")
++set_target (endpoint use_tls port_number host_name _) target =
++  if length target >= 16384
++    then Nothing
++    else Just (endpoint use_tls port_number host_name (pack target))
++
++split_authority : List Char → (List Char, List Char)
++split_authority [] = ([], [])
++split_authority input@(character :: rest) =
++  if character == '/' || character == '?'
++    then ([], input)
++    else let (authority, target) = split_authority rest in
++      (character :: authority, target)
++
++parse_absolute_rest : Bool → Int → List Char → Maybe transport_endpoint
++parse_absolute_rest use_tls default_port input =
++  let (authority, separator) = split_authority input in
++    if authority == [] || length authority >= 1024
++      then Nothing
++      else case parse_authority authority default_port use_tls "/" of
++        Nothing => Nothing
++        Just parsed =>
++          case separator of
++            [] => Just parsed
++            '?' :: _ => set_target parsed ('/' :: separator)
++            _ => set_target parsed separator
++
++parse_absolute_location : List Char → Bool → Maybe transport_endpoint
++parse_absolute_location location default_tls =
++  case strip_prefix_ascii (unpack "http://") location of
++    Just rest => parse_absolute_rest False 80 rest
++    Nothing =>
++      case strip_prefix_ascii (unpack "https://") location of
++        Just rest => parse_absolute_rest True 443 rest
++        Nothing =>
++          case strip_prefix (unpack "//") location of
++            Just rest =>
++              parse_absolute_rest default_tls (if default_tls then 443 else 80) rest
++            Nothing => Nothing
++
++public export
++request_target : String → Maybe String
++request_target request =
++  case strip_prefix (unpack "GET ") (unpack request) of
++    Nothing => Nothing
++    Just rest =>
++      case split_first ' ' rest of
++        Just ([], _) => Nothing
++        Just (target, _) =>
++          if length target >= 16384 then Nothing else Just (pack target)
++        Nothing => Nothing
++
++remove_query : List Char → List Char
++remove_query [] = []
++remove_query ('?' :: _) = []
++remove_query (character :: rest) = character :: remove_query rest
++
++directory_prefix : List Char → List Char
++directory_prefix target =
++  case split_last '/' target of
++    Just (directory, _) => directory ++ ['/']
++    Nothing => case target of
++      [] => []
++      first :: _ => [first]
++
++starts_absolute : List Char → Bool
++starts_absolute location =
++  case strip_prefix_ascii (unpack "http://") location of
++    Just _ => True
++    Nothing => case strip_prefix_ascii (unpack "https://") location of
++      Just _ => True
++      Nothing => case strip_prefix (unpack "//") location of
++        Just _ => True
++        Nothing => False
++
++public export
++resolve_location :
++  transport_endpoint → String → String → Maybe transport_endpoint
++resolve_location current request raw_location =
++  if not (visible_url raw_location) || length (unpack raw_location) >= 4096
++    then Nothing
++    else
++      let location = drop_fragment_characters (unpack raw_location) in
++        case location of
++          [] => Nothing
++          _ =>
++            if starts_absolute location
++              then parse_absolute_location location (endpoint_tls current)
++              else case location of
++                '/' :: _ => set_target current location
++                _ =>
++                  case request_target request of
++                    Nothing => Nothing
++                    Just raw_target =>
++                      let current_target = remove_query (unpack raw_target) in
++                        case location of
++                          '?' :: _ => set_target current (current_target ++ location)
++                          _ => set_target current (directory_prefix current_target ++ location)
++
++public export
++endpoint_authority : transport_endpoint → String
++endpoint_authority value =
++  let default_port = if endpoint_tls value then 443 else 80 in
++    if endpoint_port value == default_port
++      then endpoint_host value
++      else endpoint_host value ++ ":" ++ show (endpoint_port value)
++
++split_crlf : List Char → Maybe (List Char, List Char)
++split_crlf [] = Nothing
++split_crlf ('\r' :: '\n' :: rest) = Just ([], rest)
++split_crlf (character :: rest) =
++  case split_crlf rest of
++    Nothing => Nothing
++    Just (line, remaining) => Just (character :: line, remaining)
++
++rewrite_headers :
++  List Char → List Char → (List Char, Bool) → Maybe (List Char, Bool)
++rewrite_headers authority input (output, replaced_host) =
++  case split_crlf input of
++    Nothing => Nothing
++    Just ([], _) => Just (output, replaced_host)
++    Just (line, remaining) =>
++      let replacement = unpack ("Host: " ++ pack authority ++ "\r\n") in
++        case strip_prefix_ascii (unpack "Host:") line of
++          Just _ =>
++            rewrite_headers authority (assert_smaller input remaining)
++              (output ++ replacement, True)
++          Nothing =>
++            rewrite_headers authority (assert_smaller input remaining)
++              (output ++ line ++ ['\r', '\n'], replaced_host)
++
++public export
++rewrite_get_request : String → transport_endpoint → Maybe String
++rewrite_get_request request next =
++  case split_crlf (unpack request) of
++    Nothing => Nothing
++    Just (_, headers) =>
++      let authority = unpack (endpoint_authority next)
++          first_line = unpack ("GET " ++ endpoint_target next ++ " HTTP/1.0\r\n")
++      in case rewrite_headers authority headers (first_line, False) of
++        Nothing => Nothing
++        Just (rewritten, True) => Just (pack (rewritten ++ ['\r', '\n']))
++        Just (rewritten, False) =>
++          Just (pack (rewritten ++ unpack "Host: " ++ authority ++ ['\r', '\n', '\r', '\n']))
++
++public export
++valid_wire_request : String → Bool
++valid_wire_request request =
++  case strip_prefix (unpack "GET ") (unpack request) of
++    Just _ => True
++    Nothing => case strip_prefix (unpack "POST ") (unpack request) of
++      Just _ => True
++      Nothing => False
+diff --git a/tests/TransportModelOracle.idric b/tests/TransportModelOracle.idric
+new file mode 100644
+index 000000000000..95b152fe36c8
+--- /dev/null
++++ b/tests/TransportModelOracle.idric
+@@ -0,0 +1,75 @@
++module Main
++
++import System
++import TransportModel
++
++parse_integer_characters : Int → List Char → Maybe Int
++parse_integer_characters accumulated [] = Just accumulated
++parse_integer_characters accumulated (character :: rest) =
++  if ord character >= ord '0' && ord character <= ord '9'
++    then parse_integer_characters (accumulated * 10 + ord character - ord '0') rest
++    else Nothing
++
++parse_integer : String → Maybe Int
++parse_integer "" = Nothing
++parse_integer text = parse_integer_characters 0 (unpack text)
++
++show_bool : Bool → String
++show_bool True = "true"
++show_bool False = "false"
++
++show_optional_integer : Maybe Int → String
++show_optional_integer Nothing = "invalid"
++show_optional_integer (Just value) = show value
++
++show_optional_string : Maybe String → String
++show_optional_string Nothing = "invalid"
++show_optional_string (Just value) = value
++
++show_endpoint : Maybe transport_endpoint → String
++show_endpoint Nothing = "invalid"
++show_endpoint (Just value) =
++  (if endpoint_tls value then "https" else "http") ++ "|" ++
++  endpoint_host value ++ "|" ++ show (endpoint_port value) ++ "|" ++
++  endpoint_target value
++
++parse_endpoint : String → String → String → String → Maybe transport_endpoint
++parse_endpoint scheme host_name port_text target =
++  case parse_integer port_text of
++    Nothing => Nothing
++    Just port_number =>
++      if scheme == "https"
++        then Just (endpoint True port_number host_name target)
++        else if scheme == "http"
++          then Just (endpoint False port_number host_name target)
++          else Nothing
++
++run : List String → String
++run ["parse-status", headers] = show_optional_integer (parse_status headers)
++run ["header", headers, wanted] =
++  case header_value headers wanted of
++    Nothing => "missing"
++    Just value => value
++run ["redirect-status", status_text] =
++  case parse_integer status_text of
++    Nothing => "invalid"
++    Just status => show_bool (redirect_status status)
++run ["visible-url", text] = show_bool (visible_url text)
++run ["valid-request", request] = show_bool (valid_wire_request request)
++run ["request-target", request] = show_optional_string (request_target request)
++run ["resolve", scheme, host_name, port_text, target, request, location] =
++  case parse_endpoint scheme host_name port_text target of
++    Nothing => "invalid"
++    Just current => show_endpoint (resolve_location current request location)
++run ["rewrite", scheme, host_name, port_text, target, request] =
++  case parse_endpoint scheme host_name port_text target of
++    Nothing => "invalid"
++    Just next => show_optional_string (rewrite_get_request request next)
++run _ = "invalid invocation"
++
++main : IO ()
++main = do
++  arguments ← getArgs
++  case arguments of
++    _ :: rest => putStr (run rest)
++    [] => putStr "invalid invocation"
+diff --git a/tests/check_transport_equivalence.py b/tests/check_transport_equivalence.py
+new file mode 100644
+index 000000000000..5dab0e90b168
+--- /dev/null
++++ b/tests/check_transport_equivalence.py
+@@ -0,0 +1,59 @@
++#!/usr/bin/env python3
++import argparse
++import json
++import subprocess
++from pathlib import Path
++
++
++def run(executable, operation, arguments):
++    return subprocess.run(
++        [executable, operation, *arguments],
++        check=False,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.PIPE,
++    )
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("c_oracle")
++    parser.add_argument("idric_oracle")
++    parser.add_argument(
++        "--fixtures",
++        default=str(Path(__file__).with_name("transport-fixtures.json")),
++    )
++    arguments = parser.parse_args()
++
++    fixtures = json.loads(Path(arguments.fixtures).read_text(encoding="utf-8"))
++    failures = []
++    for fixture in fixtures:
++        c_result = run(arguments.c_oracle, fixture["operation"], fixture["arguments"])
++        idric_result = run(arguments.idric_oracle, fixture["operation"], fixture["arguments"])
++        if (
++            c_result.returncode != idric_result.returncode
++            or c_result.stdout != idric_result.stdout
++            or c_result.stderr != idric_result.stderr
++        ):
++            failures.append(
++                {
++                    "name": fixture["name"],
++                    "c": (c_result.returncode, c_result.stdout, c_result.stderr),
++                    "idric": (
++                        idric_result.returncode,
++                        idric_result.stdout,
++                        idric_result.stderr,
++                    ),
++                }
++            )
++        else:
++            print("ok  ", fixture["name"])
++
++    for failure in failures:
++        print("FAIL", failure["name"])
++        print("  C:    ", repr(failure["c"]))
++        print("  Idriç:", repr(failure["idric"]))
++    raise SystemExit(1 if failures else 0)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/transport-fixtures.json b/tests/transport-fixtures.json
+new file mode 100644
+index 000000000000..3d3b6237001d
+--- /dev/null
++++ b/tests/transport-fixtures.json
+@@ -0,0 +1,142 @@
++[
++  {
++    "name": "status with reason",
++    "operation": "parse-status",
++    "arguments": ["HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n"]
++  },
++  {
++    "name": "status without reason",
++    "operation": "parse-status",
++    "arguments": ["HTTP/1.1 308\r\n\r\n"]
++  },
++  {
++    "name": "invalid short status",
++    "operation": "parse-status",
++    "arguments": ["HTTP/1.0 20\r\n\r\n"]
++  },
++  {
++    "name": "invalid nondecimal status",
++    "operation": "parse-status",
++    "arguments": ["HTTP/1.0 2O0 no\r\n\r\n"]
++  },
++  {
++    "name": "location is case insensitive and trimmed",
++    "operation": "header",
++    "arguments": ["HTTP/1.0 302 Found\r\nContent-Length: 0\r\nlOcAtIoN:\t /next?q=1 \t\r\n\r\n", "Location"]
++  },
++  {
++    "name": "empty location is absent",
++    "operation": "header",
++    "arguments": ["HTTP/1.0 302 Found\r\nLocation: \t\r\n\r\n", "Location"]
++  },
++  {
++    "name": "invalid first matching location is final",
++    "operation": "header",
++    "arguments": ["HTTP/1.0 302 Found\r\nLocation: \t\r\nLocation: /second\r\n\r\n", "Location"]
++  },
++  {
++    "name": "header scan stops at body",
++    "operation": "header",
++    "arguments": ["HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nLocation: /not-a-header\r\n", "Location"]
++  },
++  {
++    "name": "301 redirects",
++    "operation": "redirect-status",
++    "arguments": ["301"]
++  },
++  {
++    "name": "306 does not redirect",
++    "operation": "redirect-status",
++    "arguments": ["306"]
++  },
++  {
++    "name": "visible ASCII URL",
++    "operation": "visible-url",
++    "arguments": ["/books?q=logic#page-2"]
++  },
++  {
++    "name": "space is not a wire URL byte",
++    "operation": "visible-url",
++    "arguments": ["/two words"]
++  },
++  {
++    "name": "Unicode is not a wire URL byte",
++    "operation": "visible-url",
++    "arguments": ["/café"]
++  },
++  {
++    "name": "GET wire request accepted",
++    "operation": "valid-request",
++    "arguments": ["GET / HTTP/1.0\r\n\r\n"]
++  },
++  {
++    "name": "method matching remains case sensitive",
++    "operation": "valid-request",
++    "arguments": ["get / HTTP/1.0\r\n\r\n"]
++  },
++  {
++    "name": "extract request target",
++    "operation": "request-target",
++    "arguments": ["GET /a/b?q=1 HTTP/1.0\r\nHost: example.com\r\n\r\n"]
++  },
++  {
++    "name": "reject empty request target",
++    "operation": "request-target",
++    "arguments": ["GET  HTTP/1.0\r\n\r\n"]
++  },
++  {
++    "name": "absolute HTTPS redirect",
++    "operation": "resolve",
++    "arguments": ["http", "old.example", "80", "/a/start", "GET /a/start HTTP/1.0\r\nHost: old.example\r\n\r\n", "https://new.example:444/final?q=1#ignored"]
++  },
++  {
++    "name": "absolute scheme matching is case insensitive",
++    "operation": "resolve",
++    "arguments": ["http", "old.example", "80", "/", "GET / HTTP/1.0\r\nHost: old.example\r\n\r\n", "HTTPS://new.example?only=query"]
++  },
++  {
++    "name": "scheme-relative redirect keeps TLS",
++    "operation": "resolve",
++    "arguments": ["https", "old.example", "443", "/a/start", "GET /a/start HTTP/1.0\r\nHost: old.example\r\n\r\n", "//new.example/final"]
++  },
++  {
++    "name": "root-relative redirect",
++    "operation": "resolve",
++    "arguments": ["http", "example.com", "8080", "/a/start", "GET /a/start HTTP/1.0\r\nHost: example.com:8080\r\n\r\n", "/root/final#fragment"]
++  },
++  {
++    "name": "ordinary relative redirect",
++    "operation": "resolve",
++    "arguments": ["http", "example.com", "80", "/a/start?old=1", "GET /a/start?old=1 HTTP/1.0\r\nHost: example.com\r\n\r\n", "next?q=2"]
++  },
++  {
++    "name": "query-only redirect",
++    "operation": "resolve",
++    "arguments": ["http", "example.com", "80", "/a/start?old=1", "GET /a/start?old=1 HTTP/1.0\r\nHost: example.com\r\n\r\n", "?new=2"]
++  },
++  {
++    "name": "reject redirect userinfo",
++    "operation": "resolve",
++    "arguments": ["http", "example.com", "80", "/", "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n", "https://name@other.example/"]
++  },
++  {
++    "name": "reject redirect bad port",
++    "operation": "resolve",
++    "arguments": ["http", "example.com", "80", "/", "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n", "https://other.example:65536/"]
++  },
++  {
++    "name": "rewrite target and existing Host",
++    "operation": "rewrite",
++    "arguments": ["https", "new.example", "443", "/next?q=1", "GET /old HTTP/1.0\r\nHost: old.example\r\nX-Test: keep\r\n\r\n"]
++  },
++  {
++    "name": "rewrite adds missing nondefault Host",
++    "operation": "rewrite",
++    "arguments": ["http", "new.example", "8080", "/next", "GET /old HTTP/1.0\r\nX-Test: keep\r\n\r\n"]
++  },
++  {
++    "name": "rewrite rejects malformed header framing",
++    "operation": "rewrite",
++    "arguments": ["http", "new.example", "80", "/next", "GET /old HTTP/1.0\nHost: old.example\n\n"]
++  }
++]
+diff --git a/tests/transport_model_oracle.c b/tests/transport_model_oracle.c
+new file mode 100644
+index 000000000000..3acb322a3a4b
+--- /dev/null
++++ b/tests/transport_model_oracle.c
+@@ -0,0 +1,117 @@
++#define main icu_transport_unused_main
++#include "../native/transport.c"
++#undef main
++
++static int fixture_integer(const char *text, int *value) {
++    char *end = NULL;
++    long parsed = strtol(text, &end, 10);
++    if (text[0] == '\0' || end == NULL || *end != '\0' || parsed < 0 || parsed > 65535) {
++        return 0;
++    }
++    *value = (int)parsed;
++    return 1;
++}
++
++static int fixture_endpoint(int argc, char **argv, int offset, endpoint *value) {
++    if (offset + 3 >= argc || !fixture_integer(argv[offset + 2], &value->port)) {
++        return 0;
++    }
++    if (strcmp(argv[offset], "https") == 0) {
++        value->use_tls = 1;
++    } else if (strcmp(argv[offset], "http") == 0) {
++        value->use_tls = 0;
++    } else {
++        return 0;
++    }
++    if (strlen(argv[offset + 1]) >= sizeof(value->host) ||
++        strlen(argv[offset + 3]) >= sizeof(value->target)) {
++        return 0;
++    }
++    strcpy(value->host, argv[offset + 1]);
++    strcpy(value->target, argv[offset + 3]);
++    return 1;
++}
++
++static void print_bool(int value) {
++    fputs(value ? "true" : "false", stdout);
++}
++
++static void print_endpoint(const endpoint *value) {
++    printf("%s|%s|%d|%s", value->use_tls ? "https" : "http",
++           value->host, value->port, value->target);
++}
++
++int main(int argc, char **argv) {
++    if (argc == 3 && strcmp(argv[1], "parse-status") == 0) {
++        int status = parse_status(argv[2], strlen(argv[2]));
++        if (status < 0) {
++            fputs("invalid", stdout);
++        } else {
++            printf("%d", status);
++        }
++        return 0;
++    }
++    if (argc == 4 && strcmp(argv[1], "header") == 0) {
++        char value[MAX_LOCATION_BYTES];
++        if (copy_header_value(argv[2], strlen(argv[2]), argv[3], value, sizeof(value))) {
++            fputs(value, stdout);
++        } else {
++            fputs("missing", stdout);
++        }
++        return 0;
++    }
++    if (argc == 3 && strcmp(argv[1], "redirect-status") == 0) {
++        int status = 0;
++        if (!fixture_integer(argv[2], &status)) {
++            fputs("invalid", stdout);
++        } else {
++            print_bool(redirect_status(status));
++        }
++        return 0;
++    }
++    if (argc == 3 && strcmp(argv[1], "visible-url") == 0) {
++        print_bool(visible_url_bytes(argv[2]));
++        return 0;
++    }
++    if (argc == 3 && strcmp(argv[1], "valid-request") == 0) {
++        print_bool(valid_wire_request(argv[2]));
++        return 0;
++    }
++    if (argc == 3 && strcmp(argv[1], "request-target") == 0) {
++        char target[MAX_TARGET_BYTES];
++        if (request_target(argv[2], target, sizeof(target))) {
++            fputs(target, stdout);
++        } else {
++            fputs("invalid", stdout);
++        }
++        return 0;
++    }
++    if (argc == 8 && strcmp(argv[1], "resolve") == 0) {
++        endpoint current;
++        endpoint result;
++        if (!fixture_endpoint(argc, argv, 2, &current) ||
++            !resolve_location(&current, argv[6], argv[7], &result)) {
++            fputs("invalid", stdout);
++        } else {
++            print_endpoint(&result);
++        }
++        return 0;
++    }
++    if (argc == 7 && strcmp(argv[1], "rewrite") == 0) {
++        endpoint next;
++        if (!fixture_endpoint(argc, argv, 2, &next)) {
++            fputs("invalid", stdout);
++            return 0;
++        }
++        char *request = rewrite_get_request(argv[6], &next);
++        if (request == NULL) {
++            fputs("invalid", stdout);
++        } else {
++            fputs(request, stdout);
++            free(request);
++        }
++        return 0;
++    }
++    fputs("invalid invocation", stdout);
++    return 0;
++}
