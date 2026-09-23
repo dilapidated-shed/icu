@@ -1,0 +1,1671 @@
+diff --git a/.github/workflows/idric-end-to-end.yml b/.github/workflows/idric-end-to-end.yml
+index 8342e5c91cbd..1c05416d2b89 100644
+--- a/.github/workflows/idric-end-to-end.yml
++++ b/.github/workflows/idric-end-to-end.yml
+@@ -18,7 +18,7 @@ jobs:
+         uses: actions/checkout@v4
+         with:
+           repository: isomorphisms/Idric
+-          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
++          ref: 74f2ce870fb812356b55d48e873e801c44412405
+           path: .tools/Idric
+ 
+       - name: Install build dependencies
+@@ -28,29 +28,29 @@ jobs:
+ 
+       - name: Build Idric compiler
+         run: |
+-          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
+-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" --version
++          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap SCHEME=scheme
++          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" --version
+ 
+       - name: Compile ICU through Idric
+         env:
+-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
++          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+         run: |
+           make check-native
+-          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
++          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
+ 
+       - name: Run pure Idric HTTP model tests
+         env:
+-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
++          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+         run: |
+-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
++          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" tests/HttpTests.idric -o icu-http-tests
+           ./build/exec/icu-http-tests
+ 
+       - name: Compare C and Idric transport models
+         env:
+-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
++          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+         run: |
+           make check-transport-model \
+-            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
++            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
+ 
+       - name: Start deterministic HTTP and HTTPS servers
+         run: |
+@@ -182,7 +182,7 @@ jobs:
+         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+         with:
+           repository: isomorphisms/Idric
+-          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
++          ref: 74f2ce870fb812356b55d48e873e801c44412405
+           path: .tools/Idric
+ 
+       - name: Checkout canonical hostile-input corpus
+@@ -200,12 +200,12 @@ jobs:
+ 
+       - name: Build Idric compiler and ICU ingestion executable
+         env:
+-          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
++          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+         run: |
+-          make -C "$GITHUB_WORKSPACE/.tools/Idric" bootstrap SCHEME=scheme
++          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap SCHEME=scheme
+           make check-native
+-          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+-          "$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2" \
++          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
++          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" \
+             tests/IngestionReceipt.idric -o icu-ingestion
+           test -x build/exec/icu-ingestion
+           test -f build/exec/icu-ingestion_app/icu-ingestion.so
+diff --git a/.github/workflows/openai-responses-client.yml b/.github/workflows/openai-responses-client.yml
+new file mode 100644
+index 000000000000..1c2c9ca2c70f
+--- /dev/null
++++ b/.github/workflows/openai-responses-client.yml
+@@ -0,0 +1,185 @@
++name: OpenAI Responses client
++
++on:
++  pull_request:
++    paths:
++      - 'src/OpenAI.idric'
++      - 'src/Main.idric'
++      - 'src/Transport.idric'
++      - 'icu.ipkg'
++      - 'tests/OpenAITests.idric'
++      - '.github/workflows/openai-responses-client.yml'
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++jobs:
++  openai-client:
++    runs-on: ubuntu-24.04
++    steps:
++      - name: Checkout ICU
++        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++
++      - name: Checkout Idric compiler
++        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++        with:
++          repository: isomorphisms/Idric
++          ref: 74f2ce870fb812356b55d48e873e801c44412405
++          path: .tools/Idric
++
++      - name: Install build and trace dependencies
++        run: |
++          sudo apt-get update
++          sudo apt-get install --yes --no-install-recommends chezscheme libssl-dev strace
++
++      - name: Build Idric and ICU
++        env:
++          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
++        run: |
++          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" bootstrap SCHEME=scheme
++          make -C "$GITHUB_WORKSPACE/.tools/Idric/_" test only=idris2/basic/edric005
++          make check-native
++          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
++          "$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2" \
++            tests/OpenAITests.idric -o icu-openai-tests
++          ./build/exec/icu-openai-tests
++
++      - name: Start deterministic Responses-shaped server
++        run: |
++          cat > "$RUNNER_TEMP/openai-mock.py" <<'PY'
++          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++          import json
++
++          EXPECTED_PROMPT = "hello\nsecond line\n"
++
++          class Handler(BaseHTTPRequestHandler):
++              protocol_version = "HTTP/1.0"
++
++              def log_message(self, format, *args):
++                  pass
++
++              def send_json(self, status, value):
++                  body = json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
++                  self.send_response(status)
++                  self.send_header("Content-Type", "application/json; charset=utf-8")
++                  self.send_header("Content-Length", str(len(body)))
++                  self.end_headers()
++                  self.wfile.write(body)
++
++              def do_POST(self):
++                  length = int(self.headers.get("Content-Length", "0"))
++                  raw = self.rfile.read(length)
++                  if self.path == "/v1/error":
++                      self.send_json(401, {"error": {"message": "synthetic auth failure"}})
++                      return
++                  if self.path != "/v1/responses":
++                      self.send_json(404, {"error": {"message": "not found"}})
++                      return
++                  try:
++                      request = json.loads(raw.decode("utf-8"))
++                  except Exception as exc:
++                      self.send_json(400, {"error": {"message": str(exc)}})
++                      return
++                  if self.headers.get("Authorization") != "Bearer test-key":
++                      self.send_json(401, {"error": {"message": "bad authorization"}})
++                      return
++                  if self.headers.get("Content-Type") != "application/json":
++                      self.send_json(400, {"error": {"message": "bad content type"}})
++                      return
++                  if request != {
++                      "model": "test-model",
++                      "input": EXPECTED_PROMPT,
++                      "store": False,
++                  }:
++                      self.send_json(400, {"error": {"message": "wrong request body"}})
++                      return
++                  self.send_json(
++                      200,
++                      {
++                          "id": "resp_mock",
++                          "object": "response",
++                          "status": "completed",
++                          "output": [
++                              {
++                                  "id": "msg_mock",
++                                  "type": "message",
++                                  "status": "completed",
++                                  "role": "assistant",
++                                  "content": [
++                                      {
++                                          "type": "output_text",
++                                          "annotations": [],
++                                          "text": 'mock answer\nline 2 "quoted" ☃ 😀',
++                                      }
++                                  ],
++                              }
++                          ],
++                      },
++                  )
++
++          ThreadingHTTPServer(("127.0.0.1", 18082), Handler).serve_forever()
++          PY
++          python3 "$RUNNER_TEMP/openai-mock.py" > "$RUNNER_TEMP/openai-mock.log" 2>&1 &
++          echo $! > "$RUNNER_TEMP/openai-mock.pid"
++          sleep 1
++
++      - name: Prove the real command boundary through ICU transport
++        run: |
++          printf 'hello\nsecond line\n' > "$RUNNER_TEMP/prompt.txt"
++          printf 'mock answer\nline 2 "quoted" ☃ 😀' > "$RUNNER_TEMP/expected.txt"
++
++          OPENAI_API_KEY=test-key \
++          OPENAI_MODEL=test-model \
++          OPENAI_RESPONSES_URL=http://127.0.0.1:18082/v1/responses \
++          strace -f -qq -e trace=execve -o "$RUNNER_TEMP/openai.execve" \
++            ./build/exec/icu openai \
++            < "$RUNNER_TEMP/prompt.txt" \
++            > "$RUNNER_TEMP/answer.txt" \
++            2> "$RUNNER_TEMP/client.err"
++
++          cmp "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/answer.txt"
++          test ! -s "$RUNNER_TEMP/client.err"
++          if grep -Eiq 'curl|python|openai[-_]?sdk' "$RUNNER_TEMP/openai.execve"; then
++            echo 'OpenAI client escaped the ICU executable boundary' >&2
++            cat "$RUNNER_TEMP/openai.execve" >&2
++            exit 1
++          fi
++
++      - name: Preserve API and local failure as non-answers
++        run: |
++          : > "$RUNNER_TEMP/failure.out"
++          : > "$RUNNER_TEMP/failure.err"
++          if OPENAI_API_KEY=test-key \
++              OPENAI_MODEL=test-model \
++              OPENAI_RESPONSES_URL=http://127.0.0.1:18082/v1/error \
++              ./build/exec/icu openai \
++              < "$RUNNER_TEMP/prompt.txt" \
++              > "$RUNNER_TEMP/failure.out" \
++              2> "$RUNNER_TEMP/failure.err"; then
++            echo 'HTTP failure produced a successful answer' >&2
++            exit 1
++          fi
++          test ! -s "$RUNNER_TEMP/failure.out"
++          grep -F 'http_status=401' "$RUNNER_TEMP/failure.err"
++          if grep -F 'test-key' "$RUNNER_TEMP/failure.err"; then
++            echo 'API key leaked to diagnostics' >&2
++            exit 1
++          fi
++
++          : > "$RUNNER_TEMP/no-key.out"
++          : > "$RUNNER_TEMP/no-key.err"
++          if env -u OPENAI_API_KEY \
++              ./build/exec/icu openai \
++              < "$RUNNER_TEMP/prompt.txt" \
++              > "$RUNNER_TEMP/no-key.out" \
++              2> "$RUNNER_TEMP/no-key.err"; then
++            echo 'missing API key unexpectedly succeeded' >&2
++            exit 1
++          fi
++          test ! -s "$RUNNER_TEMP/no-key.out"
++          grep -F 'OPENAI_API_KEY is not set' "$RUNNER_TEMP/no-key.err"
++
++      - name: Show mock log on failure
++        if: failure()
++        run: cat "$RUNNER_TEMP/openai-mock.log" 2>/dev/null || true
+diff --git a/Makefile b/Makefile
+index f694ebfacdd6..86f6e7060099 100644
+--- a/Makefile
++++ b/Makefile
+@@ -11,9 +11,11 @@ all: libicu_transport.so
+ libicu_transport.so: native/transport.c
+ 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $< $(OPENSSL_LIBS)
+ 
+-check-native: native/transport.c
+-	$(CC) $(CFLAGS) -Werror -fPIC -shared -o /tmp/icu-transport-check.so $< $(OPENSSL_LIBS)
+-	rm -f /tmp/icu-transport-check.so
++check-native: native/transport.c tests/RedirectPolicyTests.c
++	$(CC) $(CFLAGS) -Werror -fPIC -shared -o /tmp/icu-transport-check.so native/transport.c $(OPENSSL_LIBS)
++	$(CC) $(CFLAGS) -Werror -o /tmp/icu-redirect-policy-tests tests/RedirectPolicyTests.c $(OPENSSL_LIBS)
++	/tmp/icu-redirect-policy-tests
++	rm -f /tmp/icu-transport-check.so /tmp/icu-redirect-policy-tests
+ 
+ check-transport-model: tests/transport_model_oracle.c tests/TransportModelOracle.idric \
+ 		tests/transport-fixtures.json tests/check_transport_equivalence.py
+diff --git a/README.md b/README.md
+index 2784b11951f7..53abb8e8b6a3 100644
+--- a/README.md
++++ b/README.md
+@@ -28,17 +28,21 @@ choice url one_of
+ choice request one_of
+   get url
+   post url String
++
++choice request_header one_of
++  http_header String String
+ ```
+ 
+-`src/Http.idric` owns URL parsing and HTTP request rendering.
+-`src/Transport.idric` chooses plain TCP or verified TLS from the URL choice.
+-`native/transport.c` owns sockets, OpenSSL, response framing, and the small
+-amount of response-header handling needed to keep GET useful on the web.
+-`src/TransportModel.idric` is the side-by-side Idriç translation of the pure
+-parts of that native transport: status and header parsing, redirect
++`src/Http.idric` owns URL parsing, checked caller-supplied headers, and HTTP
++request rendering. `src/Transport.idric` chooses plain TCP or verified TLS from
++the URL choice. `native/transport.c` owns sockets, OpenSSL, response framing,
++and the small amount of response-header handling needed to keep GET useful on
++the web. `src/TransportModel.idric` is the side-by-side Idriç translation of the
++pure parts of that native transport: status and header parsing, redirect
+ classification and resolution, request-target validation, and redirected GET
+ rewriting. The live transport still uses the C copies while their equivalence
+-boundary is established.
++boundary is established. `src/OpenAI.idric` owns the Responses API request JSON,
++authentication header, response extraction, and fresh-chat command behavior.
+ `src/Main.idric` owns the tiny command-line grammar.
+ 
+ The C boundary independently refuses wire requests that do not begin with GET
+@@ -49,17 +53,66 @@ Edriç model.
+ 
+ ```text
+ icu get https://example.com/
+-icu post https://example.com/message hello
++icu get -H 'X-Api-Key: secret' https://example.com/data
++icu post -H 'Content-Type: application/json' https://example.com/message '{}'
+ ```
+ 
++`-H` and `--header` may be repeated before the URL. This restores the useful
++caller-header part of curl's old command surface without reviving curl itself.
++A caller header with the same case-insensitive name as ICU's default `Host`,
++`Accept-Encoding`, `User-Agent`, or POST `Content-Type` replaces that default.
++ICU still owns request framing: caller attempts to set `Connection`,
++`Content-Length`, or `Transfer-Encoding` are refused. Header names are currently
++a safe ASCII subset (letters, digits, `-`, `_`), and values may contain only
++visible ASCII plus horizontal tab; CR/LF injection is rejected. Curl's `-H
++@file` form is not implemented.
++
+ The transport uses HTTP/1.0 plus `Connection: close`. Requests advertise
+-`Accept-Encoding: identity`, so HTML and image bodies can be consumed directly
+-without first adding gzip/brotli decoding. POST text is encoded as UTF-8:
+-Idriç computes `Content-Length` from the encoded byte count, then the native
+-transport writes request headers and body separately using that explicit body
+-length. Response headers are bounded to 64 KiB. The status line and `Location`
+-are parsed before the final response body is streamed byte-for-byte to stdout;
+-other response headers remain internal for now.
++`Accept-Encoding: identity` unless the caller replaces it, so HTML and image
++bodies can normally be consumed directly without first adding gzip/brotli
++decoding. POST text is encoded as UTF-8: Idriç computes `Content-Length` from
++the encoded byte count, then the native transport writes request headers and
++body separately using that explicit body length. Response headers are bounded
++to 64 KiB. The status line and `Location` are parsed before the final response
++body is streamed byte-for-byte to stdout; other response headers remain internal
++for now.
++
++### OpenAI Responses API
++
++`icu openai` is the real fresh-request command intended for the Blackball A/B
++runner. The prompt is the complete UTF-8 stdin stream. A successful invocation
++writes only the first `output_text` answer to stdout; diagnostics and failures go
++to stderr and return nonzero.
++
++```sh
++printf 'Explain the employment evidence for this degree.\n' | \
++  OPENAI_API_KEY="$OPENAI_API_KEY" \
++  ./build/exec/icu openai
++```
++
++The default endpoint is `https://api.openai.com/v1/responses` and the default
++model is `gpt-5.6-sol`. `OPENAI_RESPONSES_URL` and `OPENAI_MODEL` can override
++those values for a pinned experiment or deterministic local fixture.
++
++Every invocation creates one Responses API request with no conversation ID or
++`previous_response_id`; the request also sets `store` to false. No tool list is
++supplied. The API key is read only from `OPENAI_API_KEY`, rejected if it cannot
++safely form one HTTP header value, and is never written to stdout, stderr, the
++response files, or reproducibility metadata.
++
++This is intentionally dogfooded through ICU. The OpenAI-specific code is Idriç,
++constructs its Authorization, JSON Content-Type, and User-Agent through the same
++checked `request_header` values exposed to other ICU callers, and uses the
++generic file-backed ICU transport path. It does not invoke curl, Python, an
++OpenAI SDK, or another HTTP client. The current sockets/TLS owner remains the
++already-declared `native/transport.c` C/OpenSSL boundary; this change does not
++mislabel that older boundary as one-language transport.
++
++The JSON work is also local: Idriç escapes the prompt/model request strings and
++extracts an `output_text` string from the returned Responses JSON, including
++standard JSON escapes and Unicode surrogate pairs. Temporary response and
++metadata files are namespaced by process ID under `TMPDIR` (default `/tmp`) and
++removed before the command returns.
+ 
+ ### Redirects
+ 
+@@ -72,11 +125,16 @@ Supported `Location` forms are:
+ - ordinary relative paths;
+ - query-only redirects.
+ 
+-Fragments are removed before the redirected request. Redirected GET preserves
+-the original request headers except that the request target and `Host` header
+-are rewritten for the new endpoint. Cross-scheme redirects reselect plain TCP
+-or verified TLS from the destination. POST redirects are deliberately not
+-followed yet because 301/302/303 method rewriting needs an explicit Idriç policy.
++Fragments are removed before the redirected request. Redirected GET rewrites the
++request target and `Host` header for the new endpoint. Other headers are
++preserved on same-origin redirects. On a change of scheme, host, or port,
++`Authorization` and `Cookie` are stripped before the next request, matching the
++specific credential rule documented by the preserved curl `--header` source;
++other caller headers remain present. A caller using another secret-bearing header
++name such as `X-Api-Key` should therefore avoid an untrusted cross-origin redirect.
++Cross-scheme redirects reselect plain TCP or verified TLS from the destination.
++POST redirects are deliberately not followed yet because 301/302/303 method
++rewriting needs an explicit Idriç policy.
+ 
+ Response bodies are binary-safe: an image can be fetched directly to a file,
+ for example:
+@@ -87,8 +145,9 @@ icu get https://example.com/cover.jpg > cover.jpg
+ 
+ Current intentional limits:
+ 
+-- no proxies, cookies, authentication helpers, or custom methods
+-- no compressed-response decoder; requests currently ask servers for identity encoding
++- no proxies, cookie jar, authentication helper layer, or custom methods
++- custom header files (`-H @file`) are not supported
++- no compressed-response decoder; requests normally ask servers for identity encoding
+ - POST redirects are not followed
+ - no FTP, SMTP, file URLs, or other curl protocols
+ - URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
+@@ -131,7 +190,7 @@ repo-local transport library:
+ ```
+ 
+ `make check-native` compiles the native boundary with warnings promoted to
+-errors.
++errors and runs the redirect credential-policy checks.
+ 
+ `make check-transport-model` runs every case in
+ `tests/transport-fixtures.json` through a C oracle built directly from
+diff --git a/icu.ipkg b/icu.ipkg
+index 7fee43305178..0bc48441e83d 100644
+--- a/icu.ipkg
++++ b/icu.ipkg
+@@ -3,6 +3,6 @@ package icu
+ version = 0.1.0
+ sourcedir = "src"
+ 
+-modules = Http, TransportModel, Transport, Ingestion, Main
++modules = Http, TransportModel, Transport, Ingestion, OpenAI, Main
+ main = Main
+ executable = icu
+diff --git a/native/transport.c b/native/transport.c
+index ec012612e803..7563347e68e9 100644
+--- a/native/transport.c
++++ b/native/transport.c
+@@ -692,7 +692,45 @@ static int endpoint_authority(const endpoint *value, char *output, size_t capaci
+     return written > 0 && (size_t)written < capacity;
+ }
+ 
+-static char *rewrite_get_request(const char *request, const endpoint *next) {
++static int same_origin(const endpoint *left, const endpoint *right) {
++    return left->use_tls == right->use_tls &&
++           left->port == right->port &&
++           strcasecmp(left->host, right->host) == 0;
++}
++
++static int header_line_named(const char *line, size_t line_length, const char *name) {
++    size_t name_length = strlen(name);
++    return line_length > name_length && line[name_length] == ':' &&
++           strncasecmp(line, name, name_length) == 0;
++}
++
++static int header_line_named_in_list(const char *line, size_t line_length,
++                                     const char *names) {
++    if (names == NULL) {
++        return 0;
++    }
++    const char *cursor = names;
++    while (*cursor != '\0') {
++        const char *line_end = strchr(cursor, '\n');
++        size_t name_length = line_end == NULL
++            ? strlen(cursor)
++            : (size_t)(line_end - cursor);
++        if (name_length != 0 && line_length > name_length &&
++            line[name_length] == ':' &&
++            strncasecmp(line, cursor, name_length) == 0) {
++            return 1;
++        }
++        if (line_end == NULL) {
++            break;
++        }
++        cursor = line_end + 1;
++    }
++    return 0;
++}
++
++static char *rewrite_get_request_with_policy(const char *request, const endpoint *next,
++                                             int preserve_sensitive,
++                                             const char *credential_header_names) {
+     const char *line_end = strstr(request, "\r\n");
+     if (line_end == NULL) {
+         return NULL;
+@@ -730,7 +768,7 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
+             break;
+         }
+ 
+-        if (line_length >= 5 && strncasecmp(cursor, "Host:", 5) == 0) {
++        if (header_line_named(cursor, line_length, "Host")) {
+             written = snprintf(output + used, capacity - used, "Host: %s\r\n", authority);
+             replaced_host = 1;
+             if (written < 0 || (size_t)written >= capacity - used) {
+@@ -738,6 +776,12 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
+                 return NULL;
+             }
+             used += (size_t)written;
++        } else if (!preserve_sensitive &&
++                   (header_line_named(cursor, line_length, "Authorization") ||
++                    header_line_named(cursor, line_length, "Cookie") ||
++                    header_line_named_in_list(
++                      cursor, line_length, credential_header_names))) {
++            /* Do not forward credentials to another origin. */
+         } else {
+             if (line_length + 2 >= capacity - used) {
+                 free(output);
+@@ -768,6 +812,10 @@ static char *rewrite_get_request(const char *request, const endpoint *next) {
+     return output;
+ }
+ 
++static char *rewrite_get_request(const char *request, const endpoint *next) {
++    return rewrite_get_request_with_policy(request, next, 1, "");
++}
++
+ static int valid_wire_request(const char *request) {
+     return strncmp(request, "GET ", 4) == 0 || strncmp(request, "POST ", 5) == 0;
+ }
+@@ -795,6 +843,7 @@ static int one_request(const endpoint *target, const char *request_headers,
+ 
+ static int send_request(const char *host, int port, const char *request_headers,
+                         const char *request_body, int request_body_length, int use_tls,
++                        const char *credential_header_names,
+                         const char *body_output_path, const char *metadata_output_path) {
+     if (request_body_length < 0 || (request_body_length != 0 && request_body == NULL)) {
+         complain("invalid request body length");
+@@ -804,6 +853,9 @@ static int send_request(const char *host, int port, const char *request_headers,
+         complain("transport accepts only GET and POST requests");
+         return 2;
+     }
++    if (credential_header_names == NULL) {
++        credential_header_names = "";
++    }
+ 
+     int is_get = strncmp(request_headers, "GET ", 4) == 0;
+     if (is_get && request_body_length != 0) {
+@@ -891,7 +943,10 @@ static int send_request(const char *host, int port, const char *request_headers,
+             complain("unsupported redirect location");
+             return 8;
+         }
+-        char *next_request = rewrite_get_request(current_request, &next);
++        char *next_request = same_origin(&current, &next)
++            ? rewrite_get_request(current_request, &next)
++            : rewrite_get_request_with_policy(
++                current_request, &next, 0, credential_header_names);
+         if (next_request == NULL) {
+             close_connection(&opened);
+             free(current_request);
+@@ -909,25 +964,65 @@ static int send_request(const char *host, int port, const char *request_headers,
+ int icu_send_http(const char *host, int port, const char *request_headers,
+                   const char *request_body, int request_body_length) {
+     return send_request(host, port, request_headers, request_body, request_body_length,
+-                        0, NULL, NULL);
++                        0, "", NULL, NULL);
+ }
+ 
+ int icu_send_https(const char *host, int port, const char *request_headers,
+                    const char *request_body, int request_body_length) {
+     return send_request(host, port, request_headers, request_body, request_body_length,
+-                        1, NULL, NULL);
++                        1, "", NULL, NULL);
++}
++
++int icu_send_http_with_credentials(const char *host, int port,
++                                   const char *request_headers,
++                                   const char *request_body,
++                                   int request_body_length,
++                                   const char *credential_header_names) {
++    return send_request(host, port, request_headers, request_body, request_body_length,
++                        0, credential_header_names, NULL, NULL);
++}
++
++int icu_send_https_with_credentials(const char *host, int port,
++                                    const char *request_headers,
++                                    const char *request_body,
++                                    int request_body_length,
++                                    const char *credential_header_names) {
++    return send_request(host, port, request_headers, request_body, request_body_length,
++                        1, credential_header_names, NULL, NULL);
+ }
+ 
+ int icu_fetch_http(const char *host, int port, const char *request_headers,
+                    const char *request_body, int request_body_length,
+                    const char *body_output_path, const char *metadata_output_path) {
+     return send_request(host, port, request_headers, request_body, request_body_length,
+-                        0, body_output_path, metadata_output_path);
++                        0, "", body_output_path, metadata_output_path);
+ }
+ 
+ int icu_fetch_https(const char *host, int port, const char *request_headers,
+                     const char *request_body, int request_body_length,
+                     const char *body_output_path, const char *metadata_output_path) {
+     return send_request(host, port, request_headers, request_body, request_body_length,
+-                        1, body_output_path, metadata_output_path);
++                        1, "", body_output_path, metadata_output_path);
++}
++
++int icu_fetch_http_with_credentials(const char *host, int port,
++                                    const char *request_headers,
++                                    const char *request_body,
++                                    int request_body_length,
++                                    const char *body_output_path,
++                                    const char *metadata_output_path,
++                                    const char *credential_header_names) {
++    return send_request(host, port, request_headers, request_body, request_body_length,
++                        0, credential_header_names, body_output_path, metadata_output_path);
++}
++
++int icu_fetch_https_with_credentials(const char *host, int port,
++                                     const char *request_headers,
++                                     const char *request_body,
++                                     int request_body_length,
++                                     const char *body_output_path,
++                                     const char *metadata_output_path,
++                                     const char *credential_header_names) {
++    return send_request(host, port, request_headers, request_body, request_body_length,
++                        1, credential_header_names, body_output_path, metadata_output_path);
+ }
+diff --git a/src/Http.idric b/src/Http.idric
+index a421af679509..deea28e74390 100644
+--- a/src/Http.idric
++++ b/src/Http.idric
+@@ -12,6 +12,11 @@ choice request one_of
+   get url
+   post url String
+ 
++public export
++choice request_header one_of
++  http_header String String
++  credential_header String String
++
+ strip_prefix : List Char → List Char → Maybe (List Char)
+ strip_prefix [] input = Just input
+ strip_prefix _ [] = Nothing
+@@ -149,12 +154,135 @@ authority (http_url name 80 _) = name
+ authority (https_url name 443 _) = name
+ authority value = host value ++ ":" ++ show (port value)
+ 
+-common_headers : url → String
+-common_headers target_url =
+-  "Host: " ++ authority target_url ++ "\r\n" ++
++ascii_lower : Char → Char
++ascii_lower character =
++  if character >= 'A' && character <= 'Z'
++    then chr (ord character + 32)
++    else character
++
++ascii_equal : List Char → List Char → Bool
++ascii_equal [] [] = True
++ascii_equal [] _ = False
++ascii_equal _ [] = False
++ascii_equal (left :: remaining_left) (right :: remaining_right) =
++  ascii_lower left == ascii_lower right &&
++  ascii_equal remaining_left remaining_right
++
++header_name_equal : String → String → Bool
++header_name_equal left right = ascii_equal (unpack left) (unpack right)
++
++header_name_character : Char → Bool
++header_name_character character =
++  (character >= 'A' && character <= 'Z') ||
++  (character >= 'a' && character <= 'z') ||
++  (character >= '0' && character <= '9') ||
++  character == '-' || character == '_'
++
++header_value_character : Char → Bool
++header_value_character character =
++  character == '\t' || (ord character >= 32 && ord character < 127)
++
++reserved_header_name : String → Bool
++reserved_header_name name =
++  header_name_equal name "Connection" ||
++  header_name_equal name "Content-Length" ||
++  header_name_equal name "Transfer-Encoding"
++
++header_name : request_header → String
++header_name (http_header name _) = name
++header_name (credential_header name _) = name
++
++header_value : request_header → String
++header_value (http_header _ value) = value
++header_value (credential_header _ value) = value
++
++header_problem : request_header → Maybe String
++header_problem current =
++  let name = header_name current
++      value = header_value current
++  in if name == ""
++    then Just "HTTP header name is empty"
++    else if not (all_characters header_name_character (unpack name))
++      then Just "HTTP header name must contain only ASCII letters, digits, '-' or '_'"
++      else if not (all_characters header_value_character (unpack value))
++        then Just "HTTP header value must be ASCII without control characters"
++        else if reserved_header_name name
++          then Just ("ICU owns HTTP framing header: " ++ name)
++          else Nothing
++
++public export
++make_header : String → String → Either String request_header
++make_header name value =
++  let built = http_header name value in
++    case header_problem built of
++      Nothing => Right built
++      Just problem => Left problem
++
++public export
++make_credential_header : String → String → Either String request_header
++make_credential_header name value =
++  let built = credential_header name value in
++    case header_problem built of
++      Nothing => Right built
++      Just problem => Left problem
++
++split_header : List Char → Maybe (List Char, List Char)
++split_header [] = Nothing
++split_header (':' :: rest) = Just ([], rest)
++split_header (character :: rest) =
++  case split_header rest of
++    Nothing => Nothing
++    Just (name, value) => Just (character :: name, value)
++
++drop_header_space : List Char → List Char
++drop_header_space (' ' :: rest) = drop_header_space rest
++drop_header_space ('\t' :: rest) = drop_header_space rest
++drop_header_space characters = characters
++
++public export
++parse_header : String → Either String request_header
++parse_header text =
++  case split_header (unpack text) of
++    Nothing => Left "HTTP header must have the form Name: value"
++    Just (name, value) => make_header (pack name) (pack (drop_header_space value))
++
++header_named : String → request_header → Bool
++header_named wanted current = header_name_equal wanted (header_name current)
++
++has_header : String → List request_header → Bool
++has_header _ [] = False
++has_header wanted (current :: rest) =
++  header_named wanted current || has_header wanted rest
++
++render_headers : List request_header → String
++render_headers [] = ""
++render_headers (current :: rest) =
++  header_name current ++ ": " ++ header_value current ++ "\r\n" ++ render_headers rest
++
++validate_headers : List request_header → Maybe String
++validate_headers [] = Nothing
++validate_headers (current :: rest) =
++  case header_problem current of
++    Just problem => Just problem
++    Nothing => validate_headers rest
++
++public export
++credential_header_names : List request_header → String
++credential_header_names [] = ""
++credential_header_names (http_header _ _ :: rest) = credential_header_names rest
++credential_header_names (credential_header name _ :: rest) =
++  name ++ "\n" ++ credential_header_names rest
++
++optional_default_header : String → String → List request_header → String
++optional_default_header name value headers =
++  if has_header name headers then "" else name ++ ": " ++ value ++ "\r\n"
++
++base_headers : url → List request_header → String
++base_headers target_url headers =
++  optional_default_header "Host" (authority target_url) headers ++
+   "Connection: close\r\n" ++
+-  "Accept-Encoding: identity\r\n" ++
+-  "User-Agent: icu/0.1\r\n"
++  optional_default_header "Accept-Encoding" "identity" headers ++
++  optional_default_header "User-Agent" "icu/0.1" headers
+ 
+ utf8_character_bytes : Char → Int
+ utf8_character_bytes character =
+@@ -176,24 +304,44 @@ public export
+ utf8_byte_length : String → Int
+ utf8_byte_length text = utf8_byte_length_characters (unpack text)
+ 
+-public export
+-render_request_parts : request → (String, String, Int)
+-render_request_parts (get target_url) =
++render_request_parts_unchecked : request → List request_header → (String, String, Int)
++render_request_parts_unchecked (get target_url) headers =
+   ("GET " ++ target target_url ++ " HTTP/1.0\r\n" ++
+-   common_headers target_url ++
++   base_headers target_url headers ++
++   render_headers headers ++
+    "\r\n",
+    "",
+    0)
+-render_request_parts (post target_url body) =
++render_request_parts_unchecked (post target_url body) headers =
+   let body_length = utf8_byte_length body in
+     ("POST " ++ target target_url ++ " HTTP/1.0\r\n" ++
+-     common_headers target_url ++
+-     "Content-Type: text/plain; charset=utf-8\r\n" ++
++     base_headers target_url headers ++
++     optional_default_header "Content-Type" "text/plain; charset=utf-8" headers ++
++     render_headers headers ++
+      "Content-Length: " ++ show body_length ++ "\r\n" ++
+      "\r\n",
+      body,
+      body_length)
+ 
++public export
++render_request_parts_with_headers :
++  request → List request_header → Either String (String, String, Int)
++render_request_parts_with_headers value headers =
++  case validate_headers headers of
++    Just problem => Left problem
++    Nothing => Right (render_request_parts_unchecked value headers)
++
++public export
++render_request_parts : request → (String, String, Int)
++render_request_parts value = render_request_parts_unchecked value []
++
++public export
++render_request_with_headers : request → List request_header → Either String String
++render_request_with_headers value headers =
++  case render_request_parts_with_headers value headers of
++    Left problem => Left problem
++    Right (wire_headers, body, _) => Right (wire_headers ++ body)
++
+ public export
+ render_request : request → Either String String
+ render_request value =
+diff --git a/src/Main.idric b/src/Main.idric
+index 258b00c00679..71947149f751 100644
+--- a/src/Main.idric
++++ b/src/Main.idric
+@@ -1,40 +1,74 @@
+ module Main
+ 
+ import Http
++import OpenAI
+ import System
++import System.File
+ import Transport
+ 
+ 
+ usage : String
+ usage =
+   "usage:\n" ++
+-  "  icu get  http://host/path\n" ++
+-  "  icu get  https://host/path\n" ++
+-  "  icu post http://host/path BODY\n" ++
+-  "  icu post https://host/path BODY"
+-
+-parse_command : List String → Either String request
+-parse_command ["get", text] =
+-  case parse_url text of
++  "  icu get  [-H 'Name: value']... http://host/path\n" ++
++  "  icu get  [-H 'Name: value']... https://host/path\n" ++
++  "  icu post [-H 'Name: value']... http://host/path BODY\n" ++
++  "  icu post [-H 'Name: value']... https://host/path BODY\n" ++
++  "  icu openai < prompt.txt"
++
++collect_headers :
++  List String → List request_header → Either String (List request_header, List String)
++collect_headers [] headers = Right (reverse headers, [])
++collect_headers ("-H" :: value :: rest) headers =
++  case parse_header value of
++    Left problem => Left problem
++    Right parsed => collect_headers rest (parsed :: headers)
++collect_headers ("--header" :: value :: rest) headers =
++  case parse_header value of
++    Left problem => Left problem
++    Right parsed => collect_headers rest (parsed :: headers)
++collect_headers ["-H"] _ = Left "-H requires a Name: value argument"
++collect_headers ["--header"] _ = Left "--header requires a Name: value argument"
++collect_headers arguments headers = Right (reverse headers, arguments)
++
++parse_command : List String → Either String (request, List request_header)
++parse_command ("get" :: arguments) =
++  case collect_headers arguments [] of
+     Left problem => Left problem
+-    Right target_url => Right (get target_url)
+-parse_command ["post", text, body] =
+-  case parse_url text of
++    Right (headers, [text]) =>
++      case parse_url text of
++        Left problem => Left problem
++        Right target_url => Right (get target_url, headers)
++    Right _ => Left usage
++parse_command ("post" :: arguments) =
++  case collect_headers arguments [] of
+     Left problem => Left problem
+-    Right target_url => Right (post target_url body)
++    Right (headers, [text, body]) =>
++      case parse_url text of
++        Left problem => Left problem
++        Right target_url => Right (post target_url body, headers)
++    Right _ => Left usage
+ parse_command _ = Left usage
+ 
+ fail_with : String → IO ()
+ fail_with problem = do
+-  putStrLn problem
++  _ ← fPutStrLn stderr problem
+   exitFailure
+ 
++run_openai : IO ()
++run_openai = do
++  outcome ← query_stdin
++  case outcome of
++    Left problem => fail_with problem
++    Right answer => putStr answer
++
+ run : List String → IO ()
++run ["openai"] = run_openai
+ run arguments =
+   case parse_command arguments of
+     Left problem => fail_with problem
+-    Right value => do
+-      outcome ← send_request value
++    Right (value, headers) => do
++      outcome ← send_request_with_headers value headers
+       case outcome of
+         Left problem => fail_with problem
+         Right status => exitWith (cast status)
+diff --git a/src/OpenAI.idric b/src/OpenAI.idric
+new file mode 100644
+index 000000000000..185eadb85262
+--- /dev/null
++++ b/src/OpenAI.idric
+@@ -0,0 +1,308 @@
++module OpenAI
++
++import Data.String
++import Http
++import Ingestion
++import System
++import System.File
++import Transport
++
++public export
++default_responses_url : String
++default_responses_url = "https://api.openai.com/v1/responses"
++
++public export
++default_model : String
++default_model = "gpt-5.6-sol"
++
++hex_digit : Int → Char
++hex_digit value =
++  if value < 10
++    then chr (ord '0' + value)
++    else chr (ord 'a' + value - 10)
++
++json_escape_chars : List Char → List Char
++json_escape_chars [] = []
++json_escape_chars ('"' :: rest) = '\\' :: '"' :: json_escape_chars rest
++json_escape_chars ('\\' :: rest) = '\\' :: '\\' :: json_escape_chars rest
++json_escape_chars ('\n' :: rest) = '\\' :: 'n' :: json_escape_chars rest
++json_escape_chars ('\r' :: rest) = '\\' :: 'r' :: json_escape_chars rest
++json_escape_chars ('\t' :: rest) = '\\' :: 't' :: json_escape_chars rest
++json_escape_chars (value :: rest) =
++  let code = ord value in
++    if code == 8
++      then '\\' :: 'b' :: json_escape_chars rest
++      else if code == 12
++        then '\\' :: 'f' :: json_escape_chars rest
++        else if code < 32
++          then '\\' :: 'u' :: '0' :: '0' ::
++               hex_digit (code `div` 16) :: hex_digit (code `mod` 16) ::
++               json_escape_chars rest
++          else value :: json_escape_chars rest
++
++public export
++json_string : String → String
++json_string value = "\"" ++ pack (json_escape_chars (unpack value)) ++ "\""
++
++public export
++responses_request_body : String → String → String
++responses_request_body model prompt =
++  "{\"model\":" ++ json_string model ++
++  ",\"input\":" ++ json_string prompt ++
++  ",\"store\":false}"
++
++hex_value : Char → Maybe Int
++hex_value value =
++  if value >= '0' && value <= '9'
++    then Just (ord value - ord '0')
++    else if value >= 'a' && value <= 'f'
++      then Just (10 + ord value - ord 'a')
++      else if value >= 'A' && value <= 'F'
++        then Just (10 + ord value - ord 'A')
++        else Nothing
++
++four_hex : List Char → Maybe (Int, List Char)
++four_hex (a :: b :: c :: d :: rest) =
++  case hex_value a of
++    Nothing => Nothing
++    Just av =>
++      case hex_value b of
++        Nothing => Nothing
++        Just bv =>
++          case hex_value c of
++            Nothing => Nothing
++            Just cv =>
++              case hex_value d of
++                Nothing => Nothing
++                Just dv => Just (av * 4096 + bv * 256 + cv * 16 + dv, rest)
++four_hex _ = Nothing
++
++unicode_escape : List Char → Maybe (Char, List Char)
++unicode_escape input =
++  case four_hex input of
++    Nothing => Nothing
++    Just (high, rest) =>
++      if high >= 55296 && high <= 56319
++        then case rest of
++          '\\' :: 'u' :: low_input =>
++            case four_hex low_input of
++              Nothing => Nothing
++              Just (low, remaining) =>
++                if low >= 56320 && low <= 57343
++                  then Just
++                    (chr (65536 + (high - 55296) * 1024 + (low - 56320)), remaining)
++                  else Nothing
++          _ => Nothing
++        else if high >= 56320 && high <= 57343
++          then Nothing
++          else Just (chr high, rest)
++
++parse_json_string_chars : List Char → List Char → Maybe (String, List Char)
++parse_json_string_chars acc [] = Nothing
++parse_json_string_chars acc ('"' :: rest) = Just (pack (reverse acc), rest)
++parse_json_string_chars acc ('\\' :: '"' :: rest) =
++  parse_json_string_chars ('"' :: acc) rest
++parse_json_string_chars acc ('\\' :: '\\' :: rest) =
++  parse_json_string_chars ('\\' :: acc) rest
++parse_json_string_chars acc ('\\' :: '/' :: rest) =
++  parse_json_string_chars ('/' :: acc) rest
++parse_json_string_chars acc ('\\' :: 'b' :: rest) =
++  parse_json_string_chars (chr 8 :: acc) rest
++parse_json_string_chars acc ('\\' :: 'f' :: rest) =
++  parse_json_string_chars (chr 12 :: acc) rest
++parse_json_string_chars acc ('\\' :: 'n' :: rest) =
++  parse_json_string_chars ('\n' :: acc) rest
++parse_json_string_chars acc ('\\' :: 'r' :: rest) =
++  parse_json_string_chars ('\r' :: acc) rest
++parse_json_string_chars acc ('\\' :: 't' :: rest) =
++  parse_json_string_chars ('\t' :: acc) rest
++parse_json_string_chars acc ('\\' :: 'u' :: rest) =
++  case unicode_escape rest of
++    Nothing => Nothing
++    Just (value, remaining) => parse_json_string_chars (value :: acc) remaining
++parse_json_string_chars acc ('\\' :: _ :: _) = Nothing
++parse_json_string_chars acc (value :: rest) =
++  if ord value < 32
++    then Nothing
++    else parse_json_string_chars (value :: acc) rest
++
++parse_json_string : List Char → Maybe (String, List Char)
++parse_json_string ('"' :: rest) = parse_json_string_chars [] rest
++parse_json_string _ = Nothing
++
++json_space : Char → Bool
++json_space value = value == ' ' || value == '\n' || value == '\r' || value == '\t'
++
++skip_json_space : List Char → List Char
++skip_json_space [] = []
++skip_json_space input@(value :: rest) =
++  if json_space value then skip_json_space rest else input
++
++find_string_field : String → List Char → Maybe (String, List Char)
++find_string_field wanted [] = Nothing
++find_string_field wanted input@('"' :: _) =
++  case parse_json_string input of
++    Nothing => Nothing
++    Just (name, after_name) =>
++      case skip_json_space after_name of
++        ':' :: after_colon =>
++          case skip_json_space after_colon of
++            value_input@('"' :: _) =>
++              case parse_json_string value_input of
++                Nothing => Nothing
++                Just (value, after_value) =>
++                  if name == wanted
++                    then Just (value, after_value)
++                    else find_string_field wanted after_value
++            _ => find_string_field wanted after_name
++        _ => find_string_field wanted after_name
++find_string_field wanted (_ :: rest) = find_string_field wanted rest
++
++find_content_marker : String → List Char → Maybe (List Char)
++find_content_marker wanted input =
++  case find_string_field "type" input of
++    Nothing => Nothing
++    Just (kind, rest) =>
++      if kind == wanted
++        then Just rest
++        else find_content_marker wanted rest
++
++public export
++extract_output_text : String → Maybe String
++extract_output_text response =
++  case find_content_marker "output_text" (unpack response) of
++    Nothing => Nothing
++    Just rest =>
++      case find_string_field "text" rest of
++        Nothing => Nothing
++        Just (text, _) => Just text
++
++public export
++extract_refusal : String → Maybe String
++extract_refusal response =
++  case find_content_marker "refusal" (unpack response) of
++    Nothing => Nothing
++    Just rest =>
++      case find_string_field "refusal" rest of
++        Nothing => Nothing
++        Just (text, _) => Just text
++
++public export
++extract_answer_text : String → Maybe String
++extract_answer_text response =
++  case extract_output_text response of
++    Just text => Just text
++    Nothing => extract_refusal response
++
++openai_headers : String → Either String (List request_header)
++openai_headers api_key =
++  if api_key == ""
++    then Left "OPENAI_API_KEY is empty"
++    else case make_header "Authorization" ("Bearer " ++ api_key) of
++      Left _ => Left "OPENAI_API_KEY contains an invalid HTTP header character"
++      Right authorization =>
++        case make_header "Content-Type" "application/json" of
++          Left problem => Left problem
++          Right content_type =>
++            case make_header "User-Agent" "icu/0.1 openai-responses" of
++              Left problem => Left problem
++              Right user_agent => Right [authorization, content_type, user_agent]
++
++env_or : String → String → IO String
++env_or name fallback = do
++  value ← getEnv name
++  case value of
++    Nothing => pure fallback
++    Just "" => pure fallback
++    Just text => pure text
++
++cleanup_file : String → IO ()
++cleanup_file path = do
++  outcome ← removeFile path
++  case outcome of
++    Left _ => pure ()
++    Right () => pure ()
++
++cleanup_files : String → String → IO ()
++cleanup_files body_path metadata_path = do
++  cleanup_file body_path
++  cleanup_file metadata_path
++
++metadata_or : String → String → List String → String
++metadata_or key fallback metadata =
++  case metadata_value key metadata of
++    Nothing => fallback
++    Just value => value
++
++response_problem : Int → List String → String
++response_problem result metadata =
++  let status = metadata_or "http_status" "unknown" metadata in
++    "OpenAI request failed: transport_code=" ++ show result ++ ", http_status=" ++ status
++
++check_response : List String → String → Either String String
++check_response metadata body =
++  let content_type = metadata_or "content_type" "unknown" metadata
++      content_encoding = metadata_or "content_encoding" "unknown" metadata
++      utf8 = metadata_or "utf8" "unknown" metadata in
++    if not (contains_text "application/json" content_type)
++      then Left ("OpenAI response is not application/json: " ++ content_type)
++      else if content_encoding /= "identity"
++        then Left ("OpenAI response used unsupported content encoding: " ++ content_encoding)
++        else if utf8 /= "valid"
++          then Left "OpenAI response is not valid UTF-8"
++          else case extract_answer_text body of
++            Nothing => Left "OpenAI response contained no output_text or refusal message"
++            Just answer => Right answer
++
++run_target : String → String → String → url → IO (Either String String)
++run_target api_key model prompt target_url =
++  case openai_headers api_key of
++    Left problem => pure (Left problem)
++    Right headers => do
++      let body = responses_request_body model prompt
++      pid ← getPID
++      temp_root ← env_or "TMPDIR" "/tmp"
++      let prefix = temp_root ++ "/icu-openai-" ++ show pid
++      let body_path = prefix ++ ".json"
++      let metadata_path = prefix ++ ".meta"
++      fetch_result ← fetch_to_files_with_headers
++        (post target_url body) headers body_path metadata_path
++      case fetch_result of
++        Left problem => pure (Left problem)
++        Right result => do
++          metadata_result ← readFile metadata_path
++          body_result ← readFile body_path
++          cleanup_files body_path metadata_path
++          let metadata = case metadata_result of
++                Left _ => []
++                Right text => lines text
++          if result /= 0
++            then pure (Left (response_problem result metadata))
++            else case body_result of
++              Left _ => pure (Left "could not read OpenAI response body")
++              Right response_body => pure (check_response metadata response_body)
++
++query_prompt : String → String → IO (Either String String)
++query_prompt api_key prompt = do
++  url_text ← env_or "OPENAI_RESPONSES_URL" default_responses_url
++  model ← env_or "OPENAI_MODEL" default_model
++  case parse_url url_text of
++    Left problem => pure (Left ("invalid OPENAI_RESPONSES_URL: " ++ problem))
++    Right target_url => run_target api_key model prompt target_url
++
++public export
++covering
++query_stdin : IO (Either String String)
++query_stdin = do
++  key_value ← getEnv "OPENAI_API_KEY"
++  case key_value of
++    Nothing => pure (Left "OPENAI_API_KEY is not set")
++    Just "" => pure (Left "OPENAI_API_KEY is empty")
++    Just api_key => do
++      prompt_result ← fRead stdin
++      case prompt_result of
++        Left _ => pure (Left "could not read prompt from stdin")
++        Right prompt =>
++          if prompt == ""
++            then pure (Left "prompt on stdin is empty")
++            else query_prompt api_key prompt
+diff --git a/src/Transport.idric b/src/Transport.idric
+index af2bd688ac49..97cf9ec16f3e 100644
+--- a/src/Transport.idric
++++ b/src/Transport.idric
+@@ -8,30 +8,76 @@ prim_send_http : String → Int → String → String → Int → PrimIO Int
+ %foreign "C:icu_send_https,libicu_transport"
+ prim_send_https : String → Int → String → String → Int → PrimIO Int
+ 
++%foreign "C:icu_send_http_with_credentials,libicu_transport"
++prim_send_http_with_credentials :
++  String → Int → String → String → Int → String → PrimIO Int
++
++%foreign "C:icu_send_https_with_credentials,libicu_transport"
++prim_send_https_with_credentials :
++  String → Int → String → String → Int → String → PrimIO Int
++
+ %foreign "C:icu_fetch_http,libicu_transport"
+ prim_fetch_http : String → Int → String → String → Int → String → String → PrimIO Int
+ 
+ %foreign "C:icu_fetch_https,libicu_transport"
+ prim_fetch_https : String → Int → String → String → Int → String → String → PrimIO Int
+ 
++%foreign "C:icu_fetch_http_with_credentials,libicu_transport"
++prim_fetch_http_with_credentials :
++  String → Int → String → String → Int → String → String → String → PrimIO Int
++
++%foreign "C:icu_fetch_https_with_credentials,libicu_transport"
++prim_fetch_https_with_credentials :
++  String → Int → String → String → Int → String → String → String → PrimIO Int
++
+ transmit : url → String → String → Int → IO Int
+ transmit (http_url name number _) wire_headers body body_length =
+   primIO (prim_send_http name (cast number) wire_headers body body_length)
+ transmit (https_url name number _) wire_headers body body_length =
+   primIO (prim_send_https name (cast number) wire_headers body body_length)
+ 
++transmit_with_credentials : url → String → String → Int → String → IO Int
++transmit_with_credentials (http_url name number _) wire_headers body body_length credential_names =
++  primIO
++    (prim_send_http_with_credentials
++      name
++      (cast number)
++      wire_headers
++      body
++      body_length
++      credential_names)
++transmit_with_credentials (https_url name number _) wire_headers body body_length credential_names =
++  primIO
++    (prim_send_https_with_credentials
++      name
++      (cast number)
++      wire_headers
++      body
++      body_length
++      credential_names)
++
++public export
++send_request_with_headers : request → List request_header → IO (Either String Int)
++send_request_with_headers value headers =
++  case render_request_parts_with_headers value headers of
++    Left problem => pure (Left problem)
++    Right (wire_headers, body, body_length) =>
++      let credential_names = credential_header_names headers in
++        case value of
++          get target_url => do
++            status ←
++              transmit_with_credentials
++                target_url wire_headers body body_length credential_names
++            pure (Right status)
++          post target_url _ => do
++            status ←
++              transmit_with_credentials
++                target_url wire_headers body body_length credential_names
++            pure (Right status)
++
+ public export
+ send_request : request → IO (Either String Int)
+-send_request value =
+-  case render_request_parts value of
+-    (wire_headers, body, body_length) =>
+-      case value of
+-        get target_url => do
+-          status ← transmit target_url wire_headers body body_length
+-          pure (Right status)
+-        post target_url _ => do
+-          status ← transmit target_url wire_headers body body_length
+-          pure (Right status)
++send_request value = send_request_with_headers value []
+ 
+ fetch : url → String → String → Int → String → String → IO Int
+ fetch (http_url name number _) wire_headers body body_length body_path metadata_path =
+@@ -39,6 +85,82 @@ fetch (http_url name number _) wire_headers body body_length body_path metadata_
+ fetch (https_url name number _) wire_headers body body_length body_path metadata_path =
+   primIO (prim_fetch_https name (cast number) wire_headers body body_length body_path metadata_path)
+ 
++fetch_with_credentials :
++  url → String → String → Int → String → String → String → IO Int
++fetch_with_credentials
++  (http_url name number _)
++  wire_headers
++  body
++  body_length
++  body_path
++  metadata_path
++  credential_names =
++    primIO
++      (prim_fetch_http_with_credentials
++        name
++        (cast number)
++        wire_headers
++        body
++        body_length
++        body_path
++        metadata_path
++        credential_names)
++fetch_with_credentials
++  (https_url name number _)
++  wire_headers
++  body
++  body_length
++  body_path
++  metadata_path
++  credential_names =
++    primIO
++      (prim_fetch_https_with_credentials
++        name
++        (cast number)
++        wire_headers
++        body
++        body_length
++        body_path
++        metadata_path
++        credential_names)
++
++public export
++fetch_raw_to_files : url → String → String → Int → String → String → IO Int
++fetch_raw_to_files target_url wire_headers body body_length body_path metadata_path =
++  fetch target_url wire_headers body body_length body_path metadata_path
++
++public export
++fetch_to_files_with_headers :
++  request → List request_header → String → String → IO (Either String Int)
++fetch_to_files_with_headers value headers body_path metadata_path =
++  case render_request_parts_with_headers value headers of
++    Left problem => pure (Left problem)
++    Right (wire_headers, body, body_length) =>
++      let credential_names = credential_header_names headers in
++        case value of
++          get target_url => do
++            status ←
++              fetch_with_credentials
++                target_url
++                wire_headers
++                body
++                body_length
++                body_path
++                metadata_path
++                credential_names
++            pure (Right status)
++          post target_url _ => do
++            status ←
++              fetch_with_credentials
++                target_url
++                wire_headers
++                body
++                body_length
++                body_path
++                metadata_path
++                credential_names
++            pure (Right status)
++
+ public export
+ fetch_to_files : request → String → String → IO Int
+ fetch_to_files value body_path metadata_path =
+diff --git a/tests/HttpTests.idric b/tests/HttpTests.idric
+index e3a272876edf..5a6503a52343 100644
+--- a/tests/HttpTests.idric
++++ b/tests/HttpTests.idric
+@@ -55,6 +55,85 @@ render_get =
+            "User-Agent: icu/0.1\r\n" ++
+            "\r\n")
+ 
++parse_authorization_header : Bool
++parse_authorization_header =
++  case parse_header "Authorization: Bearer example-token" of
++    Right (http_header name value) =>
++      name == "Authorization" && value == "Bearer example-token"
++    _ => False
++
++reject_header_value_injection : Bool
++reject_header_value_injection =
++  case make_header "X-Test" "safe\r\nX-Evil: yes" of
++    Left _ => True
++    Right _ => False
++
++reject_framing_header : Bool
++reject_framing_header =
++  case make_header "Content-Length" "999" of
++    Left _ => True
++    Right _ => False
++
++render_custom_get : Bool
++render_custom_get =
++  case parse_url "https://example.com/data" of
++    Left _ => False
++    Right target_url =>
++      case make_header "X-Api-Key" "secret" of
++        Left _ => False
++        Right custom =>
++          render_request_with_headers (get target_url) [custom] ==
++            Right
++              ("GET /data HTTP/1.0\r\n" ++
++               "Host: example.com\r\n" ++
++               "Connection: close\r\n" ++
++               "Accept-Encoding: identity\r\n" ++
++               "User-Agent: icu/0.1\r\n" ++
++               "X-Api-Key: secret\r\n" ++
++               "\r\n")
++
++credential_header_surface : Bool
++credential_header_surface =
++  case parse_url "https://example.com/data" of
++    Left _ => False
++    Right target_url =>
++      case make_credential_header "X-Api-Key" "secret" of
++        Left _ => False
++        Right custom@(credential_header name value) =>
++          name == "X-Api-Key" &&
++          value == "secret" &&
++          credential_header_names [custom] == "X-Api-Key\n" &&
++          render_request_with_headers (get target_url) [custom] ==
++            Right
++              ("GET /data HTTP/1.0\r\n" ++
++               "Host: example.com\r\n" ++
++               "Connection: close\r\n" ++
++               "Accept-Encoding: identity\r\n" ++
++               "User-Agent: icu/0.1\r\n" ++
++               "X-Api-Key: secret\r\n" ++
++               "\r\n")
++        Right _ => False
++
++replace_default_header : Bool
++replace_default_header =
++  case parse_url "https://example.com/message" of
++    Left _ => False
++    Right target_url =>
++      case make_header "Content-Type" "application/json" of
++        Left _ => False
++        Right custom =>
++          render_request_with_headers (post target_url "{}") [custom] ==
++            Right
++              ("POST /message HTTP/1.0\r\n" ++
++               "Host: example.com\r\n" ++
++               "Connection: close\r\n" ++
++               "Accept-Encoding: identity\r\n" ++
++               "User-Agent: icu/0.1\r\n" ++
++               "Content-Type: application/json\r\n" ++
++               "Content-Length: 2\r\n" ++
++               "\r\n" ++
++               "{}")
++
+ utf8_lengths : Bool
+ utf8_lengths =
+   utf8_byte_length "" == 0 &&
+@@ -89,6 +168,12 @@ all_pass =
+   reject_userinfo &&
+   reject_header_injection &&
+   render_get &&
++  parse_authorization_header &&
++  reject_header_value_injection &&
++  reject_framing_header &&
++  render_custom_get &&
++  credential_header_surface &&
++  replace_default_header &&
+   utf8_lengths &&
+   render_utf8_post
+ 
+@@ -100,6 +185,12 @@ main = do
+   check "reject URL userinfo" reject_userinfo
+   check "reject header injection" reject_header_injection
+   check "GET wire form requests identity encoding" render_get
++  check "parse Authorization header" parse_authorization_header
++  check "reject CRLF in caller header value" reject_header_value_injection
++  check "caller cannot override Content-Length" reject_framing_header
++  check "render caller-supplied GET header" render_custom_get
++  check "credential header carries redirect metadata" credential_header_surface
++  check "caller Content-Type replaces the default" replace_default_header
+   check "UTF-8 byte lengths" utf8_lengths
+   check "POST carries UTF-8 body with byte Content-Length" render_utf8_post
+   if all_pass then pure () else exitFailure
+diff --git a/tests/OpenAITests.idric b/tests/OpenAITests.idric
+new file mode 100644
+index 000000000000..4a9616c9bfcd
+--- /dev/null
++++ b/tests/OpenAITests.idric
+@@ -0,0 +1,48 @@
++module Main
++
++import OpenAI
++import System
++
++expect : String → Bool → IO ()
++expect name True = putStrLn ("PASS " ++ name)
++expect name False = die ("FAIL " ++ name)
++
++expect_equal : String → String → String → IO ()
++expect_equal name expected actual =
++  expect name (expected == actual)
++
++expect_output : String → String → String → IO ()
++expect_output name response expected =
++  case extract_answer_text response of
++    Nothing => die ("FAIL " ++ name ++ ": no answer text")
++    Just actual => expect_equal name expected actual
++
++main : IO ()
++main = do
++  expect_equal "json-basic"
++    "\"line 1\\n\\\"quoted\\\"\\tend\""
++    (json_string "line 1\n\"quoted\"\tend")
++
++  expect_equal "request-body"
++    "{\"model\":\"test-model\",\"input\":\"hello\\nworld\",\"store\":false}"
++    (responses_request_body "test-model" "hello\nworld")
++
++  expect_output "responses-shape"
++    "{\"id\":\"resp_test\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"annotations\":[],\"text\":\"answer\\nline 2\"}]}]}"
++    "answer\nline 2"
++
++  expect_output "unicode-escape"
++    "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"snowman: \\u2603\"}]}]}"
++    "snowman: ☃"
++
++  expect_output "surrogate-pair"
++    "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"face: \\ud83d\\ude00\"}]}]}"
++    "face: 😀"
++
++  expect_output "structured-refusal"
++    "{\"output\":[{\"content\":[{\"type\":\"refusal\",\"refusal\":\"I cannot help with that request.\"}]}]}"
++    "I cannot help with that request."
++
++  case extract_answer_text "{\"error\":{\"message\":\"no answer\"}}" of
++    Nothing => putStrLn "PASS missing-output"
++    Just _ => die "FAIL missing-output"
+diff --git a/tests/RedirectPolicyTests.c b/tests/RedirectPolicyTests.c
+new file mode 100644
+index 000000000000..338040d04802
+--- /dev/null
++++ b/tests/RedirectPolicyTests.c
+@@ -0,0 +1,70 @@
++#include "../native/transport.c"
++
++static int contains(const char *text, const char *piece) {
++    return strstr(text, piece) != NULL;
++}
++
++static endpoint test_endpoint(int use_tls, int port, const char *host, const char *target) {
++    endpoint value;
++    memset(&value, 0, sizeof(value));
++    value.use_tls = use_tls;
++    value.port = port;
++    strcpy(value.host, host);
++    strcpy(value.target, target);
++    return value;
++}
++
++int main(void) {
++    endpoint current = test_endpoint(1, 443, "example.com", "/start");
++    endpoint same = test_endpoint(1, 443, "EXAMPLE.COM", "/next");
++    endpoint other_host = test_endpoint(1, 443, "other.example", "/next");
++    endpoint other_port = test_endpoint(1, 444, "example.com", "/next");
++    endpoint other_scheme = test_endpoint(0, 443, "example.com", "/next");
++
++    if (!same_origin(&current, &same) ||
++        same_origin(&current, &other_host) ||
++        same_origin(&current, &other_port) ||
++        same_origin(&current, &other_scheme)) {
++        fputs("origin comparison failed\n", stderr);
++        return 1;
++    }
++
++    const char *request =
++        "GET /start HTTP/1.0\r\n"
++        "Host: example.com\r\n"
++        "Authorization: Bearer secret\r\n"
++        "Cookie: session=secret\r\n"
++        "X-Api-Key: synthetic-secret\r\n"
++        "X-Trace: keep-me\r\n"
++        "\r\n";
++    const char *declared_credentials = "x-api-key\n";
++
++    char *same_request = rewrite_get_request_with_policy(
++        request, &same, 1, declared_credentials);
++    if (same_request == NULL ||
++        !contains(same_request, "Authorization: Bearer secret\r\n") ||
++        !contains(same_request, "Cookie: session=secret\r\n") ||
++        !contains(same_request, "X-Api-Key: synthetic-secret\r\n") ||
++        !contains(same_request, "X-Trace: keep-me\r\n")) {
++        free(same_request);
++        fputs("same-origin credentials were not preserved\n", stderr);
++        return 1;
++    }
++    free(same_request);
++
++    char *cross_request = rewrite_get_request_with_policy(
++        request, &other_host, 0, declared_credentials);
++    if (cross_request == NULL ||
++        contains(cross_request, "Authorization:") ||
++        contains(cross_request, "Cookie:") ||
++        contains(cross_request, "X-Api-Key:") ||
++        !contains(cross_request, "X-Trace: keep-me\r\n") ||
++        !contains(cross_request, "Host: other.example\r\n")) {
++        free(cross_request);
++        fputs("cross-origin credential stripping failed\n", stderr);
++        return 1;
++    }
++    free(cross_request);
++
++    return 0;
++}
