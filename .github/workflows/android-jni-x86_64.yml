@@ -1,0 +1,94 @@
+name: Android x86_64 JNI transport
+
+on:
+  pull_request:
+    paths:
+      - 'native/transport.c'
+      - 'native/android_jni.c'
+      - 'android/**'
+      - '.github/workflows/android-jni-x86_64.yml'
+  push:
+    branches:
+      - android/dex-jni-emulator-slice
+
+env:
+  NDK_VERSION: 26.3.11579264
+  OPENSSL_REF: f4dc4d58b48d346a8270183f89acf826d459b0ca
+
+jobs:
+  x86_64-jni:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact ICU source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: icu
+
+      - name: Check out exact OpenSSL source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: openssl/openssl
+          ref: f4dc4d58b48d346a8270183f89acf826d459b0ca
+          path: openssl
+
+      - name: Install exact Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;${NDK_VERSION}"
+
+      - name: Cross-build exact OpenSSL for emulator
+        env:
+          ANDROID_ABI: x86_64
+          ANDROID_API: 24
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$ANDROID_NDK_HOME"
+          OPENSSL_REF="$OPENSSL_REF" \
+            sh icu/android/build-openssl.sh \
+              "$GITHUB_WORKSPACE/openssl" \
+              "$GITHUB_WORKSPACE/build/openssl-x86_64"
+
+      - name: Cross-build ICU JNI transport for emulator
+        env:
+          ANDROID_ABI: x86_64
+          ANDROID_API: 24
+          OPENSSL_ROOT: ${{ github.workspace }}/build/openssl-x86_64
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$ANDROID_NDK_HOME"
+          sh icu/android/build-jni.sh \
+            "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.so"
+          file "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.so"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -d "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.so" \
+            > "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.dynamic.txt"
+          if grep -E 'NEEDED.*(libssl|libcrypto)' \
+              "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.dynamic.txt"; then
+            echo 'OpenSSL unexpectedly remained a shared runtime dependency' >&2
+            exit 1
+          fi
+
+      - name: Record emulator-native receipt
+        run: |
+          sha256sum "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.so" \
+            > "$GITHUB_WORKSPACE/build/libicu_transport-x86_64.so.sha256"
+          {
+            printf 'target\tandroid-emulator\n'
+            printf 'abi\tx86_64\n'
+            printf 'api\t24\n'
+            printf 'icu_sha\t%s\n' "$(git -C icu rev-parse HEAD)"
+            printf 'openssl_sha\t%s\n' "$(git -C openssl rev-parse HEAD)"
+            printf 'network_execution\tnot_run\n'
+            printf 'physical_phone\tnot_run\n'
+          } > "$GITHUB_WORKSPACE/build/emulator-native-receipt.tsv"
+
+      - name: Retain emulator JNI input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: icu-x86_64-jni-transport
+          path: |
+            build/libicu_transport-x86_64.so
+            build/libicu_transport-x86_64.so.sha256
+            build/libicu_transport-x86_64.dynamic.txt
+            build/emulator-native-receipt.tsv
+          if-no-files-found: error
