@@ -14,7 +14,10 @@ record SourceChunk where
   start : BytePosition
 
 public export
-data StageRead error item state = Yield item state | End state | Failed error
+data StageRead : Type -> Type -> Type -> Type where
+  Yield : item -> state -> StageRead error item state
+  End : state -> StageRead error item state
+  Failed : error -> StageRead error item state
 
 public export
 record RemoteByteStep where
