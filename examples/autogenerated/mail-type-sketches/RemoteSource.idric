@@ -1,0 +1,57 @@
+module RemoteSource
+
+import Data.Bits
+
+public export
+record MailboxIdentity where
+  constructor MkMailboxIdentity
+  remote_account : String
+  mailbox_label : String
+
+public export
+record RemotePath where
+  constructor MkRemotePath
+  path_text : String
+
+public export
+record SourceObservation where
+  constructor MkSourceObservation
+  observed_size : Maybe Nat
+  observed_modification_time : Maybe String
+  observed_identity : Maybe String
+
+public export
+record SourcePosition where
+  constructor MkSourcePosition
+  byte_offset : Nat
+
+public export
+record ByteChunk where
+  constructor MkByteChunk
+  chunk_bytes : List Bits8
+  first_position : SourcePosition
+
+public export
+data SourceFailure = SourceOpenFailure String | SourceReadFailure String | SourceChangedDuringRead | SourceCloseFailure String
+
+public export
+data SourceRead
+  = SourceBytes ByteChunk SourcePosition
+  | SourceEnd SourcePosition
+  | SourceReadError SourceFailure
+
+public export
+record RemoteMailboxHandle where
+  constructor MkRemoteMailboxHandle
+  mailbox_identity : MailboxIdentity
+  remote_path : RemotePath
+  source_observation : SourceObservation
+  next_position : SourcePosition
+
+public export
+record RemoteSourceOperations where
+  constructor MkRemoteSourceOperations
+  inspect_source : MailboxIdentity -> RemotePath -> IO (Either SourceFailure SourceObservation)
+  open_source : MailboxIdentity -> RemotePath -> SourceObservation -> IO (Either SourceFailure RemoteMailboxHandle)
+  read_source : RemoteMailboxHandle -> IO SourceRead
+  close_source : RemoteMailboxHandle -> IO (Either SourceFailure ())

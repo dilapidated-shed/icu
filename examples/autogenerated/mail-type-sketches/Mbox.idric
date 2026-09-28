@@ -1,0 +1,59 @@
+module Mbox
+
+import Data.Bits
+
+public export
+record SourceIdentity where
+  constructor MkSourceIdentity
+  identity_text : String
+
+public export
+record ByteSpan where
+  constructor MkByteSpan
+  first_byte : Nat
+  byte_count : Nat
+
+public export
+record MailboxByteStream where
+  constructor MkMailboxByteStream
+  source_identity : SourceIdentity
+  next_offset : Nat
+
+public export
+data MboxLineKind = EnvelopeSeparator | OrdinaryBodyLine | EscapedFromBodyLine | MalformedCandidateLine | AmbiguousLine
+
+public export
+record EnvelopeLine where
+  constructor MkEnvelopeLine
+  envelope_bytes : List Bits8
+  envelope_span : ByteSpan
+
+public export
+record RawMessage where
+  constructor MkRawMessage
+  message_source : SourceIdentity
+  exact_mbox_span : ByteSpan
+  first_body_offset : Nat
+  final_body_offset : Nat
+
+public export
+data MboxFrame
+  = MessageStarted EnvelopeLine
+  | MessageCompleted RawMessage
+  | MailboxEnded Nat
+  | MalformedMbox ByteSpan String
+  | AmbiguousMbox ByteSpan String
+
+public export
+data MboxStep
+  = NeedMoreMailboxBytes MailboxByteStream
+  | MboxFrameFound MboxFrame MailboxByteStream
+  | MboxInputFailure String
+
+public export
+record MboxFramingOperations where
+  constructor MkMboxFramingOperations
+  accept_bytes : MailboxByteStream -> List Bits8 -> MboxStep
+
+public export
+data FromEscapingEvidence = ExactUnescapedSourceBytes ByteSpan | MboxEscapedSourceBytes ByteSpan | EscapingCannotBeResolved ByteSpan

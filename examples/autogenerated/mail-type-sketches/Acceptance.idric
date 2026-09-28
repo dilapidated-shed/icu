@@ -1,0 +1,51 @@
+module Acceptance
+
+import Data.Bits
+
+public export
+data ObservationKind
+  = ConnectionEstablished
+  | ExpectedRemoteIdentityObserved
+  | RemoteCommandCompleted
+  | BytesStreamed
+  | ExpectedByteCountObserved
+  | ExpectedDigestObserved
+  | MboxBoundaryObserved
+  | MessageImported
+  | DestinationMessageIdentified
+  | RestartPerformed
+  | DuplicateBehaviorChecked
+
+public export
+record CountObservation where
+  constructor MkCountObservation
+  expected_count : Nat
+  observed_count : Nat
+
+public export
+record DigestObservation where
+  constructor MkDigestObservation
+  expected_digest : List Bits8
+  observed_digest : List Bits8
+
+public export
+record MessageBoundaryObservation where
+  constructor MkMessageBoundaryObservation
+  source_offset : Nat
+  envelope_offset : Nat
+  body_end_offset : Nat
+
+public export
+record PhysicalAcceptanceRecord where
+  constructor MkPhysicalAcceptanceRecord
+  target_name : String
+  target_observed_identity : Maybe String
+  connection_completed : Bool
+  command_completed : Bool
+  byte_count : Maybe CountObservation
+  digest : Maybe DigestObservation
+  observed_boundaries : List MessageBoundaryObservation
+  imported_destination_id : Maybe String
+  restart_was_performed : Bool
+  duplicate_result : Maybe String
+  evidence_location : Maybe String

@@ -1,0 +1,30 @@
+module ArchiveCopy
+
+import Data.Bits
+
+public export
+record SourceObject where
+  constructor MkSourceObject
+  source_name : String
+  exact_source_bytes : Nat
+  source_digest : Maybe (List Bits8)
+
+public export
+record CopiedObject where
+  constructor MkCopiedObject
+  archive_location : String
+  copied_byte_count : Nat
+  copied_digest : Maybe (List Bits8)
+
+public export
+data CopyVerification
+  = VerifiedEqualBytes
+  | ByteCountMismatch Nat Nat
+  | DigestMismatch (List Bits8) (List Bits8)
+  | VerificationUnavailable String
+
+public export
+record ArchivalOperations where
+  constructor MkArchivalOperations
+  copy_source_object : SourceObject -> IO (Either String CopiedObject)
+  verify_copied_object : SourceObject -> CopiedObject -> IO CopyVerification

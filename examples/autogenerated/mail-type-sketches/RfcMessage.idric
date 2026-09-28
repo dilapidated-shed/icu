@@ -1,0 +1,76 @@
+module RfcMessage
+
+import Data.Bits
+
+public export
+record RawRFCMessage where
+  constructor MkRawRFCMessage
+  original_bytes : List Bits8
+
+public export
+record HeaderName where
+  constructor MkHeaderName
+  name_text : String
+
+public export
+record HeaderValue where
+  constructor MkHeaderValue
+  unfolded_value : String
+
+public export
+record FoldedHeader where
+  constructor MkFoldedHeader
+  physical_lines : List (List Bits8)
+  parsed_name : Either String HeaderName
+  parsed_value : Either String HeaderValue
+
+public export
+data TransferEncoding
+  = SevenBit
+  | EightBit
+  | BinaryEncoding
+  | QuotedPrintable
+  | Base64Encoding
+  | UnrecognizedTransferEncoding String
+
+public export
+record MediaType where
+  constructor MkMediaType
+  media_type : String
+  media_subtype : String
+  charset : Maybe String
+
+public export
+data MessageIdentifier = PresentMessageID String | MissingMessageID | MalformedMessageID (List Bits8)
+
+mutual
+  public export
+  data MIMEBody
+    = RawBody (List Bits8)
+    | DecodedBody (List Bits8)
+    | MultipartBody String (List MIMEPart)
+    | MalformedMIME String
+
+  public export
+  record MIMEPart where
+    constructor MkMIMEPart
+    part_headers : List FoldedHeader
+    part_content_type : Either String MediaType
+    transfer_encoding : TransferEncoding
+    part_body : MIMEBody
+
+public export
+record ParsedRFCMessage where
+  constructor MkParsedRFCMessage
+  message_headers : List FoldedHeader
+  message_body : MIMEBody
+  message_id : MessageIdentifier
+
+public export
+data RFCParseResult = Parsed ParsedRFCMessage | MalformedRFC String (List Bits8)
+
+public export
+record RFCInterpretationOperations where
+  constructor MkRFCInterpretationOperations
+  parse_rfc_message : RawRFCMessage -> RFCParseResult
+  interpret_mime_body : MIMEBody -> Either String MIMEBody

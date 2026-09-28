@@ -1,0 +1,55 @@
+module Provenance
+
+import Data.Bits
+
+public export
+record MailboxIdentity where
+  constructor MkMailboxIdentity
+  source_system : String
+  source_account : String
+  source_mailbox : String
+
+public export
+record SourceInterval where
+  constructor MkSourceInterval
+  first_byte : Nat
+  byte_count : Nat
+
+public export
+data HashAlgorithm = SHA256 | SHA512 | OtherHash String
+
+public export
+record RawDigest where
+  constructor MkRawDigest
+  hash_algorithm : HashAlgorithm
+  digest_bytes : List Bits8
+
+public export
+record ParserResultIdentity where
+  constructor MkParserResultIdentity
+  parser_name : String
+  parser_revision : String
+  parse_observation : String
+
+public export
+data MessageIDObservation = MessageIDPresent String | MessageIDAbsent | MessageIDMalformed String
+
+public export
+record DestinationIdentity where
+  constructor MkDestinationIdentity
+  destination_system : String
+  destination_account : String
+  destination_message_id : String
+
+public export
+record MessageProvenance where
+  constructor MkMessageProvenance
+  source_mailbox : MailboxIdentity
+  source_interval : SourceInterval
+  source_raw_digest : Maybe RawDigest
+  observed_message_id : MessageIDObservation
+  parser_result : ParserResultIdentity
+  imported_as : Maybe DestinationIdentity
+
+public export
+data IdentityCertainty = ExactSourceInterval | DigestObserved | MessageIDOnly | SourceIdentityIncomplete
