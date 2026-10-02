@@ -1,0 +1,50 @@
+module MigrationState
+
+public export
+record SourceObservation where
+  constructor MkSourceObservation
+  observed_byte_count : Nat
+  observed_digest : Maybe String
+  observed_revision : Maybe String
+
+public export
+record WorkIdentity where
+  constructor MkWorkIdentity
+  mailbox_name : String
+  first_byte : Nat
+  byte_count : Nat
+
+public export
+record ImportedIdentity where
+  constructor MkImportedIdentity
+  destination_message_id : String
+
+public export
+data MigrationState
+  = NotAttempted SourceObservation
+  | Processing SourceObservation String
+  | Imported SourceObservation ImportedIdentity
+  | RetryableFailure SourceObservation String
+  | IntentionallyStopped SourceObservation String
+  | SourceChanged SourceObservation SourceObservation
+  | OutcomeUncertain SourceObservation String
+
+public export
+data ReconciliationObservation
+  = DestinationMatch ImportedIdentity
+  | NoDestinationMatch
+  | MultipleDestinationMatches (List ImportedIdentity)
+  | DestinationCannotBeQueried String
+
+public export
+data SafeNextStep
+  = MayAttemptImport
+  | MustReconcileBeforeRetry
+  | SourceMustBeReacquired
+  | LeaveStopped
+  | AlreadyRecorded ImportedIdentity
+
+public export
+record MigrationOperations where
+  constructor MkMigrationOperations
+  reconcile_uncertain_import : ReconciliationObservation -> SafeNextStep

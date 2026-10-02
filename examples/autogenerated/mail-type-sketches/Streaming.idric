@@ -1,0 +1,48 @@
+module Streaming
+
+import Data.Bits
+
+public export
+record BytePosition where
+  constructor MkBytePosition
+  value : Nat
+
+public export
+record SourceChunk where
+  constructor MkSourceChunk
+  bytes : List Bits8
+  start : BytePosition
+
+public export
+data StageRead : Type -> Type -> Type -> Type where
+  Yield : item -> state -> StageRead error item state
+  End : state -> StageRead error item state
+  Failed : error -> StageRead error item state
+
+public export
+record RemoteByteStep where
+  constructor MkRemoteByteStep
+  read_next_bytes : IO (StageRead String SourceChunk BytePosition)
+
+public export
+record FramingStep where
+  constructor MkFramingStep
+  frame_next_message : SourceChunk -> IO (StageRead String (BytePosition, BytePosition) BytePosition)
+
+public export
+record RawMessageStep where
+  constructor MkRawMessageStep
+  read_message_bytes : BytePosition -> BytePosition -> IO (StageRead String (List Bits8) BytePosition)
+
+public export
+record ImportStep where
+  constructor MkImportStep
+  submit_message_bytes : List Bits8 -> IO (Either String String)
+
+public export
+record StreamingCompositionQuestion where
+  constructor MkStreamingCompositionQuestion
+  source_step : RemoteByteStep
+  framing_step : FramingStep
+  message_step : RawMessageStep
+  import_step : ImportStep

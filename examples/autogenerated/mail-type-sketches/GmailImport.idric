@@ -1,0 +1,51 @@
+module GmailImport
+
+import Data.Bits
+
+public export
+record DestinationAccount where
+  constructor MkDestinationAccount
+  account_identity : String
+
+public export
+record RawRFCInput where
+  constructor MkRawRFCInput
+  raw_message_bytes : List Bits8
+
+public export
+record DestinationLabels where
+  constructor MkDestinationLabels
+  labels : List String
+
+public export
+record ImportRequest where
+  constructor MkImportRequest
+  destination_account : DestinationAccount
+  raw_message : RawRFCInput
+  requested_labels : Maybe DestinationLabels
+
+public export
+record DestinationMessageID where
+  constructor MkDestinationMessageID
+  identifier_text : String
+
+public export
+record ImportReceipt where
+  constructor MkImportReceipt
+  created_message : DestinationMessageID
+  returned_labels : Maybe DestinationLabels
+
+public export
+data ImportFailure
+  = MessageRejected String
+  | RetryableImportFailure String
+  | NonRetryableImportFailure String
+  | ImportAcknowledgementLost String
+
+public export
+data ImportOutcome = ImportSucceeded ImportReceipt | ImportFailed ImportFailure
+
+public export
+record DestinationOperations where
+  constructor MkDestinationOperations
+  submit_import : ImportRequest -> IO ImportOutcome
