@@ -3,8 +3,11 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
 #include <openssl/ssl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +33,7 @@ typedef struct {
     int socket_fd;
     SSL_CTX *tls_context;
     SSL *tls;
+    int failure_code;
 } connection;
 
 typedef struct {
@@ -39,7 +43,17 @@ typedef struct {
     long long content_length;
     char content_type[256];
     char content_encoding[64];
+    int invalid_framing;
 } response_head;
+
+/* Captures are private even when the caller's umask is permissive. */
+static FILE *private_output(const char *path, const char *mode) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (fd < 0) return NULL;
+    FILE *file = fdopen(fd, mode);
+    if (file == NULL) close(fd);
+    return file;
+}
 
 typedef struct {
     int use_tls;
@@ -78,7 +92,24 @@ static int connect_tcp(const char *host, int port) {
         if (socket_fd < 0) {
             continue;
         }
-        if (connect(socket_fd, address->ai_addr, address->ai_addrlen) == 0) {
+        int flags = fcntl(socket_fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(socket_fd);
+            socket_fd = -1;
+            continue;
+        }
+        int connected = connect(socket_fd, address->ai_addr, address->ai_addrlen) == 0;
+        if (!connected && errno == EINPROGRESS) {
+            struct pollfd waiting = {socket_fd, POLLOUT, 0};
+            int ready;
+            do { ready = poll(&waiting, 1, 15000); } while (ready < 0 && errno == EINTR);
+            int error = 0;
+            socklen_t error_size = sizeof(error);
+            connected = ready > 0 && getsockopt(socket_fd, SOL_SOCKET, SO_ERROR,
+                                                &error, &error_size) == 0 && error == 0;
+            if (ready == 0) errno = ETIMEDOUT;
+        }
+        if (connected && fcntl(socket_fd, F_SETFL, flags) == 0) {
             struct timeval timeout = {15, 0};
             (void)setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
             (void)setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
@@ -115,6 +146,7 @@ static void close_connection(connection *connection) {
 }
 
 static int open_connection(const char *host, int port, int use_tls, connection *result) {
+    result->failure_code = 4;
     result->socket_fd = connect_tcp(host, port);
     result->tls_context = NULL;
     result->tls = NULL;
@@ -126,6 +158,8 @@ static int open_connection(const char *host, int port, int use_tls, connection *
     if (!use_tls) {
         return 1;
     }
+
+    result->failure_code = 5;
 
     result->tls_context = SSL_CTX_new(TLS_client_method());
     if (result->tls_context == NULL || SSL_CTX_set_default_verify_paths(result->tls_context) != 1) {
@@ -210,8 +244,10 @@ static ssize_t read_some(connection *connection, char *buffer, size_t capacity) 
             }
             int error = SSL_get_error(connection->tls, amount);
             if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
-                continue;
+                connection->failure_code = 11;
+                return -1;
             }
+            if (error != SSL_ERROR_ZERO_RETURN) connection->failure_code = 7;
             return error == SSL_ERROR_ZERO_RETURN ? 0 : -1;
         }
     }
@@ -221,6 +257,8 @@ static ssize_t read_some(connection *connection, char *buffer, size_t capacity) 
         if (amount < 0 && errno == EINTR) {
             continue;
         }
+        if (amount < 0) connection->failure_code =
+            (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) ? 11 : 7;
         return amount;
     }
 }
@@ -242,13 +280,16 @@ static int write_output(FILE *output, const char *bytes, size_t length) {
 static int parse_status(const char *headers, size_t length) {
     const char *line_end = memchr(headers, '\n', length);
     size_t line_length = line_end != NULL ? (size_t)(line_end - headers) : length;
-    const char *space = memchr(headers, ' ', line_length);
+    if (line_length < 13 || memcmp(headers, "HTTP/1.", 7) != 0 ||
+        (headers[7] != '0' && headers[7] != '1') || headers[8] != ' ') return -1;
+    const char *space = headers + 8;
     if (space == NULL || (size_t)(headers + line_length - space) < 4u) {
         return -1;
     }
     if (!isdigit((unsigned char)space[1]) ||
         !isdigit((unsigned char)space[2]) ||
-        !isdigit((unsigned char)space[3])) {
+        !isdigit((unsigned char)space[3]) ||
+        (space[4] != ' ' && space[4] != '\r')) {
         return -1;
     }
     return (space[1] - '0') * 100 + (space[2] - '0') * 10 + (space[3] - '0');
@@ -308,10 +349,25 @@ static long long parse_content_length(const char *text) {
     long long value = 0;
     for (const unsigned char *cursor = (const unsigned char *)text; *cursor != '\0'; ++cursor) {
         if (!isdigit(*cursor)) return -1;
-        if (value > 1073741824LL) return -1;
+        if (value > (LLONG_MAX - (*cursor - '0')) / 10) return -1;
         value = value * 10 + (*cursor - '0');
     }
     return value;
+}
+
+static int header_count(const char *headers, size_t length, const char *name) {
+    const char *end = headers + length;
+    const char *line = memchr(headers, '\n', length);
+    int count = 0;
+    size_t name_length = strlen(name);
+    while (line != NULL && ++line < end) {
+        const char *next = memchr(line, '\n', (size_t)(end - line));
+        if (next == NULL) break;
+        if ((size_t)(next - line) > name_length && line[name_length] == ':' &&
+            strncasecmp(line, name, name_length) == 0) ++count;
+        line = next;
+    }
+    return count;
 }
 
 static int read_response_head(connection *connection, response_head *head,
@@ -325,6 +381,7 @@ static int read_response_head(connection *connection, response_head *head,
     memset(head, 0, sizeof(*head));
     head->content_length = -1;
     strcpy(head->content_encoding, "identity");
+    connection->failure_code = 13;
 
     while (header_bytes < MAX_HEADER_BYTES) {
         ssize_t amount = read_some(connection, buffer, sizeof(buffer));
@@ -346,7 +403,7 @@ static int read_response_head(connection *connection, response_head *head,
         if (body != NULL) {
             size_t head_length = (size_t)(body - headers);
             head->status = parse_status(headers, head_length);
-            if (head->status < 100 || head->status > 999) {
+            if (head->status < 100 || head->status > 599) {
                 complain("invalid HTTP status line");
                 return 0;
             }
@@ -357,6 +414,10 @@ static int read_response_head(connection *connection, response_head *head,
                                   length_text, sizeof(length_text))) {
                 head->content_length = parse_content_length(length_text);
             }
+            int lengths = header_count(headers, head_length, "Content-Length");
+            head->invalid_framing = lengths > 1 ||
+                (lengths == 1 && head->content_length < 0) ||
+                header_count(headers, head_length, "Transfer-Encoding") != 0;
             (void)copy_header_value(headers, head_length, "Content-Type",
                                     head->content_type, sizeof(head->content_type));
             (void)copy_header_value(headers, head_length, "Content-Encoding",
@@ -384,6 +445,10 @@ static int copy_remaining_body(connection *connection, FILE *output,
                                size_t *received_length) {
     char buffer[16384];
     *received_length = 0;
+    if (output != stdout && prefix_length > MAX_CAPTURE_BYTES) {
+        connection->failure_code = 12;
+        return 0;
+    }
     if (prefix_length != 0 && !write_output(output, prefix, prefix_length)) {
         complain("could not write response body");
         return 0;
@@ -397,6 +462,7 @@ static int copy_remaining_body(connection *connection, FILE *output,
         if (output != stdout && amount > 0 &&
             (size_t)amount > MAX_CAPTURE_BYTES - *received_length) {
             complain("captured response exceeds 8 MiB");
+            connection->failure_code = 12;
             return 0;
         }
         if (amount < 0 || !write_output(output, buffer, (size_t)amount)) {
@@ -492,7 +558,7 @@ static int valid_utf8_file(const char *path) {
 static int write_response_metadata(const char *path, const response_head *head,
                                    size_t received_length, const char *body_path) {
     if (path == NULL) return 1;
-    FILE *file = fopen(path, "w");
+    FILE *file = private_output(path, "w");
     if (file == NULL) return 0;
     int ok = fprintf(file,
         "http_status\t%d\n"
@@ -841,7 +907,7 @@ static int one_request(const endpoint *target, const char *request_headers,
                        response_head *head, char *body_prefix, size_t body_capacity,
                        size_t *body_length, connection *opened) {
     if (!open_connection(target->host, target->port, target->use_tls, opened)) {
-        return target->use_tls ? 5 : 4;
+        return opened->failure_code;
     }
     if (!write_all(opened, request_headers, strlen(request_headers)) ||
         (request_body_length != 0 &&
@@ -851,8 +917,9 @@ static int one_request(const endpoint *target, const char *request_headers,
         return 6;
     }
     if (!read_response_head(opened, head, body_prefix, body_capacity, body_length)) {
+        int failure = opened->failure_code;
         close_connection(opened);
-        return 7;
+        return failure;
     }
     return 0;
 }
@@ -910,6 +977,8 @@ static int send_request(const char *host, int port, const char *request_headers,
                                  &response_body_length, &opened);
         if (result != 0) {
             free(current_request);
+            if (body_output_path == NULL && result == 4 && current.use_tls) return 5;
+            if (body_output_path == NULL && result >= 11) return 7;
             return result;
         }
 
@@ -918,7 +987,19 @@ static int send_request(const char *host, int port, const char *request_headers,
         if (!can_follow) {
             FILE *output = stdout;
             if (body_output_path != NULL) {
-                output = fopen(body_output_path, "wb");
+                if (head.invalid_framing) {
+                    close_connection(&opened);
+                    free(current_request);
+                    complain("unsupported or malformed HTTP body framing");
+                    return 13;
+                }
+                if (head.content_length > MAX_CAPTURE_BYTES) {
+                    close_connection(&opened);
+                    free(current_request);
+                    complain("captured response exceeds 8 MiB");
+                    return 12;
+                }
+                output = private_output(body_output_path, "wb");
                 if (output == NULL) {
                     close_connection(&opened);
                     free(current_request);
@@ -929,13 +1010,15 @@ static int send_request(const char *host, int port, const char *request_headers,
             size_t received_length = 0;
             int copied = copy_remaining_body(&opened, output, body_prefix,
                                              response_body_length, &received_length);
+            int copy_failure = opened.failure_code;
             if (body_output_path != NULL && fclose(output) != 0) copied = 0;
             int metadata_written = write_response_metadata(metadata_output_path, &head,
                                                            received_length,
                                                            body_output_path);
             close_connection(&opened);
             free(current_request);
-            if (!copied || !metadata_written) return 7;
+            if (!copied || !metadata_written) return body_output_path != NULL &&
+                !copied && copy_failure >= 11 ? copy_failure : 7;
             if (body_output_path != NULL && head.content_length >= 0 &&
                 (unsigned long long)head.content_length != (unsigned long long)received_length) {
                 complain("response body length does not match Content-Length");

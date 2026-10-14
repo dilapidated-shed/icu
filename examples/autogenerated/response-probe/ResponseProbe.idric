@@ -1,0 +1,49 @@
+module ResponseProbe
+
+import Data.Buffer
+import Data.Text
+import Network.HTTP
+import Network.URL
+import Response
+import System
+import System.File.Buffer
+
+%default covering
+
+die : Text → IO ()
+die message = do
+  putStrLn message
+  exitFailure
+
+run : Text → Text → Text → IO ()
+run mode address output = case parse_url address of
+  Left _ ⇒ die "invalid URL"
+  Right destination ⇒ do
+    let value = if mode ≟ "post" then post destination (http_body_from_string "café") else get destination
+    let credentials = if mode ≟ "headers" then
+          case (make_header "Authorization" "Bearer fixture-only", make_credential_header "X-API-Key" "fixture-only") of
+            (Right authorization, Right key) ⇒ [authorization, key]
+            _ ⇒ []
+          else []
+    captured ← fetch_bytes_response value credentials
+    case captured of
+      Left failure ⇒ die (failure_description failure)
+      Right response ⇒ if mode ≟ "bytes" then do
+        size ← rawSize response.body_bytes
+        saved ← writeBufferToFile output response.body_bytes size
+        case saved of
+          Left _ ⇒ die "binary output failed"
+          Right () ⇒ putStrLn (show response.status ++ "\t" ++ show size)
+      else do
+        decoded ← response_text response
+        case decoded of
+          Left failure ⇒ die (failure_description failure)
+          Right text ⇒ putStrLn (show text.status ++ "\t" ++ text.body)
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case drop 1 arguments of
+    [mode, address] ⇒ run mode address ""
+    ["bytes", address, output] ⇒ run "bytes" address output
+    _ ⇒ die "requires text|post|headers URL or bytes URL OUTPUT"
