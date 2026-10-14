@@ -80,7 +80,8 @@ static int test_proxy_configuration(void) {
     const char *invalid[] = {"http://", "http://proxy:", "http://proxy:0",
         "http://proxy:65536", "http://proxy:9999999999999", "http://proxy:-1",
         "http://user:secret@proxy", "http://proxy/path", "http://proxy?query",
-        "http://proxy#fragment", "http://proxy\r\nInjected", "https://proxy", "socks5://proxy"};
+        "http://proxy#fragment", "http://proxy\r\nInjected", "https://proxy", "socks5://proxy",
+        "http://[not-ipv6]:80", "http://proxy\\invalid:80", "http://proxy:1:2"};
     for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]); ++index) {
         setenv("HTTPS_PROXY", invalid[index], 1);
         if (proxy_configuration("example.com", 1, &proxy)) {
