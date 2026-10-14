@@ -93,9 +93,24 @@ for example:
 icu get https://example.com/cover.jpg > cover.jpg
 ```
 
+### Configured HTTPS proxy hop
+
+HTTPS requests honor `HTTPS_PROXY` (or `https_proxy`) when it names an HTTP
+proxy with an explicit hostname and optional port. A CONNECT tunnel carries
+the original HTTPS request; TLS still verifies the original destination's
+certificate and hostname. Proxy credentials in URLs, SOCKS/HTTPS proxy schemes,
+proxy paths/query/fragment values and malformed ports fail closed without
+printing the supplied value. Loopback destinations remain direct so local
+acceptance is independent of the build host's proxy environment.
+
+This bounded addition supports the configured egress hop required by restricted
+build hosts. It does not change the Idric-Net request, JSON decoding, redirect
+credential policy or the application command surface. Plain HTTP proxying and
+general `NO_PROXY` matching beyond loopback are not implemented by this slice.
+
 Current intentional limits:
 
-- no proxies, cookies, authentication helpers, or custom methods
+- no plain HTTP proxying, cookies, authentication helpers, or custom methods
 - no compressed-response decoder; requests currently ask servers for identity encoding
 - POST redirects are not followed
 - no FTP, SMTP, file URLs, or other curl protocols

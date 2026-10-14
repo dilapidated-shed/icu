@@ -48,6 +48,12 @@ typedef struct {
     char target[MAX_TARGET_BYTES];
 } endpoint;
 
+typedef struct {
+    int enabled;
+    int port;
+    char host[MAX_HOST_BYTES];
+} configured_proxy;
+
 static void complain(const char *message) {
     fprintf(stderr, "icu: %s\n", message);
 }
@@ -98,6 +104,126 @@ static int host_is_ip_address(const char *host) {
            inet_pton(AF_INET6, host, storage) == 1;
 }
 
+/* A caller-configured HTTP proxy is a transport hop, never the TLS identity.
+ * No proxy credentials are accepted or copied into origin request headers. */
+static int proxy_configuration(const char *origin_host, int use_tls,
+                               configured_proxy *result) {
+    memset(result, 0, sizeof(*result));
+    if (!use_tls || strcmp(origin_host, "127.0.0.1") == 0 || strcmp(origin_host, "::1") == 0 ||
+        strcasecmp(origin_host, "localhost") == 0) {
+        return 1;
+    }
+    const char *value = getenv("HTTPS_PROXY");
+    if (value == NULL || *value == '\0') {
+        value = getenv("https_proxy");
+    }
+    if (value == NULL || *value == '\0') {
+        return 1;
+    }
+    if (strncasecmp(value, "http://", 7) != 0 || strlen(value) >= MAX_HOST_BYTES + 32u) {
+        return 0;
+    }
+    for (const unsigned char *letter = (const unsigned char *)value; *letter; ++letter) {
+        if (*letter <= 32 || *letter == 127) {
+            return 0;
+        }
+    }
+    const char *authority = value + 7;
+    if (strchr(authority, '@') || strchr(authority, '?') || strchr(authority, '#')) {
+        return 0;
+    }
+    const char *end = strchr(authority, '/');
+    if (end != NULL && strcmp(end, "/") != 0) {
+        return 0;
+    }
+    if (end == NULL) {
+        end = authority + strlen(authority);
+    }
+    const char *host_start = authority;
+    const char *host_end;
+    const char *port_start = NULL;
+    if (*host_start == '[') {
+        ++host_start;
+        host_end = strchr(host_start, ']');
+        if (host_end == NULL || host_end >= end) {
+            return 0;
+        }
+        if (host_end + 1 < end) {
+            if (host_end[1] != ':') {
+                return 0;
+            }
+            port_start = host_end + 2;
+        }
+    } else {
+        host_end = memchr(host_start, ':', (size_t)(end - host_start));
+        if (host_end == NULL) {
+            host_end = end;
+        } else {
+            port_start = host_end + 1;
+        }
+    }
+    size_t host_length = (size_t)(host_end - host_start);
+    if (host_length == 0 || host_length >= sizeof(result->host)) {
+        return 0;
+    }
+    memcpy(result->host, host_start, host_length);
+    result->host[host_length] = '\0';
+    result->port = 80;
+    if (port_start != NULL) {
+        if (port_start == end) {
+            return 0;
+        }
+        int port = 0;
+        for (const char *letter = port_start; letter < end; ++letter) {
+            if (*letter < '0' || *letter > '9' || port > 6553) {
+                return 0;
+            }
+            port = port * 10 + (*letter - '0');
+        }
+        if (port < 1 || port > 65535) {
+            return 0;
+        }
+        result->port = port;
+    }
+    result->enabled = 1;
+    return 1;
+}
+
+static int establish_proxy_tunnel(int socket_fd, const char *host, int port) {
+    char request[MAX_HOST_BYTES * 2u + 128u];
+    int written = strchr(host, ':') != NULL
+        ? snprintf(request, sizeof(request), "CONNECT [%s]:%d HTTP/1.0\r\nHost: [%s]:%d\r\n\r\n", host, port, host, port)
+        : snprintf(request, sizeof(request), "CONNECT %s:%d HTTP/1.0\r\nHost: %s:%d\r\n\r\n", host, port, host, port);
+    if (written < 0 || (size_t)written >= sizeof(request)) {
+        return 0;
+    }
+    size_t sent = 0;
+    while (sent < (size_t)written) {
+        ssize_t count = send(socket_fd, request + sent, (size_t)written - sent, 0);
+        if (count <= 0) {
+            return 0;
+        }
+        sent += (size_t)count;
+    }
+    char response[MAX_HEADER_BYTES + 1u];
+    size_t used = 0;
+    while (used < MAX_HEADER_BYTES) {
+        if (recv(socket_fd, response + used, 1, 0) != 1) {
+            return 0;
+        }
+        ++used;
+        if (used >= 4 && memcmp(response + used - 4, "\r\n\r\n", 4) == 0) {
+            response[used] = '\0';
+            return used >= 14 && memcmp(response, "HTTP/1.", 7) == 0 &&
+                (response[7] == '0' || response[7] == '1') && response[8] == ' ' &&
+                response[9] == '2' && isdigit((unsigned char)response[10]) &&
+                isdigit((unsigned char)response[11]) &&
+                (response[12] == ' ' || response[12] == '\r');
+        }
+    }
+    return 0;
+}
+
 static void close_connection(connection *connection) {
     if (connection->tls != NULL) {
         SSL_shutdown(connection->tls);
@@ -115,7 +241,16 @@ static void close_connection(connection *connection) {
 }
 
 static int open_connection(const char *host, int port, int use_tls, connection *result) {
-    result->socket_fd = connect_tcp(host, port);
+    result->socket_fd = -1;
+    result->tls_context = NULL;
+    result->tls = NULL;
+    configured_proxy proxy;
+    if (!proxy_configuration(host, use_tls, &proxy)) {
+        complain("unsupported HTTP proxy configuration");
+        return 0;
+    }
+    result->socket_fd = connect_tcp(proxy.enabled ? proxy.host : host,
+                                    proxy.enabled ? proxy.port : port);
     result->tls_context = NULL;
     result->tls = NULL;
 
@@ -125,6 +260,11 @@ static int open_connection(const char *host, int port, int use_tls, connection *
     }
     if (!use_tls) {
         return 1;
+    }
+    if (proxy.enabled && !establish_proxy_tunnel(result->socket_fd, host, port)) {
+        complain("HTTP proxy refused or malformed the TLS tunnel");
+        close_connection(result);
+        return 0;
     }
 
     result->tls_context = SSL_CTX_new(TLS_client_method());
