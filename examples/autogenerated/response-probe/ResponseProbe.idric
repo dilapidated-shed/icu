@@ -3,6 +3,7 @@ module ResponseProbe
 import Data.Buffer
 import Data.Text
 import Network.HTTP
+import Network.Types
 import Network.URL
 import Response
 import System
@@ -14,6 +15,21 @@ die : Text → IO ()
 die message = do
   putStrLn message
   exitFailure
+
+save_bytes : HTTPBytesResponse → Text → IO ()
+save_bytes response output = do
+  size ← rawSize response.body_bytes
+  saved ← writeBufferToFile output response.body_bytes size
+  case saved of
+    Left _ ⇒ die "binary output failed"
+    Right () ⇒ putStrLn (show response.status ++ "\t" ++ show size)
+
+display_text : HTTPBytesResponse → IO ()
+display_text response = do
+  decoded ← response_text response
+  case decoded of
+    Left failure ⇒ die (failure_description failure)
+    Right text ⇒ putStrLn (show text.status ++ "\t" ++ text.body)
 
 run : Text → Text → Text → IO ()
 run mode address output = case parse_url address of
@@ -28,17 +44,7 @@ run mode address output = case parse_url address of
     captured ← fetch_bytes_response value credentials
     case captured of
       Left failure ⇒ die (failure_description failure)
-      Right response ⇒ if mode ≟ "bytes" then do
-        size ← rawSize response.body_bytes
-        saved ← writeBufferToFile output response.body_bytes size
-        case saved of
-          Left _ ⇒ die "binary output failed"
-          Right () ⇒ putStrLn (show response.status ++ "\t" ++ show size)
-      else do
-        decoded ← response_text response
-        case decoded of
-          Left failure ⇒ die (failure_description failure)
-          Right text ⇒ putStrLn (show text.status ++ "\t" ++ text.body)
+      Right response ⇒ if mode ≟ "bytes" then save_bytes response output else display_text response
 
 main : IO ()
 main = do

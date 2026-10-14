@@ -152,6 +152,7 @@ static int open_connection(const char *host, int port, int use_tls, connection *
     result->tls = NULL;
 
     if (result->socket_fd < 0) {
+        if (errno == ETIMEDOUT) result->failure_code = 11;
         complain("could not connect");
         return 0;
     }
@@ -193,6 +194,8 @@ static int open_connection(const char *host, int port, int use_tls, connection *
     }
 
     if (SSL_set_fd(result->tls, result->socket_fd) != 1 || SSL_connect(result->tls) != 1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT)
+            result->failure_code = 11;
         complain("TLS handshake failed");
         close_connection(result);
         return 0;
@@ -247,7 +250,8 @@ static ssize_t read_some(connection *connection, char *buffer, size_t capacity) 
                 connection->failure_code = 11;
                 return -1;
             }
-            if (error != SSL_ERROR_ZERO_RETURN) connection->failure_code = 7;
+            if (error != SSL_ERROR_ZERO_RETURN) connection->failure_code =
+                (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) ? 11 : 7;
             return error == SSL_ERROR_ZERO_RETURN ? 0 : -1;
         }
     }
@@ -420,8 +424,11 @@ static int read_response_head(connection *connection, response_head *head,
                 header_count(headers, head_length, "Transfer-Encoding") != 0;
             (void)copy_header_value(headers, head_length, "Content-Type",
                                     head->content_type, sizeof(head->content_type));
-            (void)copy_header_value(headers, head_length, "Content-Encoding",
+            int encoding_copied = copy_header_value(headers, head_length, "Content-Encoding",
                                     head->content_encoding, sizeof(head->content_encoding));
+            int encodings = header_count(headers, head_length, "Content-Encoding");
+            if (encodings > 1 || (encodings == 1 && !encoding_copied))
+                strcpy(head->content_encoding, "unsupported");
 
             size_t available_body = header_bytes - head_length;
             if (available_body > body_capacity) {
