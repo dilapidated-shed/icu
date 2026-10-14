@@ -713,9 +713,34 @@ static int valid_utf8_file(const char *path) {
     return valid;
 }
 
+/* Metadata is a separate, bounded file. Reconstruct the effective URL from
+ * the socket target selected by ICU, never from the caller's original string. */
+static int endpoint_url(const endpoint *final, char *output, size_t capacity) {
+    const int default_port = final->use_tls ? 443 : 80;
+    int written;
+    if (final->port == default_port) {
+        written = snprintf(output, capacity, "%s://%s%s",
+                           final->use_tls ? "https" : "http",
+                           final->host, final->target);
+    } else {
+        written = snprintf(output, capacity, "%s://%s:%d%s",
+                           final->use_tls ? "https" : "http",
+                           final->host, final->port, final->target);
+    }
+    if (written < 0 || (size_t)written >= capacity) return 0;
+    for (size_t position = 0; position < (size_t)written; ++position) {
+        unsigned char octet = (unsigned char)output[position];
+        if (octet <= 32 || octet >= 127) return 0;
+    }
+    return 1;
+}
+
 static int write_response_metadata(const char *path, const response_head *head,
-                                   size_t received_length, const char *body_path) {
+                                   size_t received_length, const char *body_path,
+                                   const endpoint *final, int redirect_count) {
     if (path == NULL) return 1;
+    char resolved_url[MAX_TARGET_BYTES + MAX_HOST_BYTES + 64u];
+    if (!endpoint_url(final, resolved_url, sizeof(resolved_url))) return 0;
     FILE *file = private_output(path, "w");
     if (file == NULL) return 0;
     int ok = fprintf(file,
@@ -724,13 +749,17 @@ static int write_response_metadata(const char *path, const response_head *head,
         "content_encoding\t%s\n"
         "declared_length\t%lld\n"
         "received_length\t%zu\n"
-        "utf8\t%s\n",
+        "utf8\t%s\n"
+        "resolved_url\t%s\n"
+        "redirect_count\t%d\n",
         head->status,
         head->content_type[0] == '\0' ? "unknown" : head->content_type,
         head->content_encoding[0] == '\0' ? "identity" : head->content_encoding,
         head->content_length,
         received_length,
-        valid_utf8_file(body_path) == 1 ? "valid" : "invalid") > 0;
+        valid_utf8_file(body_path) == 1 ? "valid" : "invalid",
+        resolved_url,
+        redirect_count) > 0;
     if (fclose(file) != 0) ok = 0;
     return ok;
 }
@@ -1171,8 +1200,8 @@ static int send_request(const char *host, int port, const char *request_headers,
             int copy_failure = opened.failure_code;
             if (body_output_path != NULL && fclose(output) != 0) copied = 0;
             int metadata_written = write_response_metadata(metadata_output_path, &head,
-                                                           received_length,
-                                                           body_output_path);
+                                                           received_length, body_output_path,
+                                                           &current, redirects);
             close_connection(&opened);
             free(current_request);
             if (!copied || !metadata_written) return body_output_path != NULL &&
@@ -1218,16 +1247,41 @@ static int send_request(const char *host, int port, const char *request_headers,
     }
 }
 
+/* Opt-in capture for the Android app_process command. Ordinary CLI stdout
+ * remains byte-for-byte unchanged when both variables are absent. ICU owns the
+ * single network request and writes exact body and metadata separately. */
+static int send_command_request(const char *host, int port,
+                                const char *request_headers,
+                                const char *request_body, int request_body_length,
+                                int use_tls) {
+    const char *body = getenv("ICU_CAPTURE_BODY_PATH");
+    const char *metadata = getenv("ICU_CAPTURE_METADATA_PATH");
+    if ((body == NULL) != (metadata == NULL)) {
+        complain("capture requires both body and metadata outputs");
+        return 2;
+    }
+    if (body != NULL) {
+        if (body[0] != '/' || metadata[0] != '/' ||
+            strcmp(body, metadata) == 0 || strlen(body) > 4096 ||
+            strlen(metadata) > 4096) {
+            complain("invalid absolute ICU capture paths");
+            return 2;
+        }
+    }
+    return send_request(host, port, request_headers, request_body,
+                        request_body_length, use_tls, "", body, metadata);
+}
+
 int icu_send_http(const char *host, int port, const char *request_headers,
                   const char *request_body, int request_body_length) {
-    return send_request(host, port, request_headers, request_body, request_body_length,
-                        0, "", NULL, NULL);
+    return send_command_request(host, port, request_headers,
+                                request_body, request_body_length, 0);
 }
 
 int icu_send_https(const char *host, int port, const char *request_headers,
                    const char *request_body, int request_body_length) {
-    return send_request(host, port, request_headers, request_body, request_body_length,
-                        1, "", NULL, NULL);
+    return send_command_request(host, port, request_headers,
+                                request_body, request_body_length, 1);
 }
 
 int icu_send_http_with_credentials(const char *host, int port,

@@ -175,6 +175,35 @@ jobs:
           fi
           grep -F 'icu: too many redirects' "$RUNNER_TEMP/icu-loop.err"
 
+      - name: Check command capture, resolved URL and unsafe output refusal
+        run: |
+          mkdir -p "$RUNNER_TEMP/icu-c67"
+          capture="$RUNNER_TEMP/icu-c67"
+          ICU_CAPTURE_BODY_PATH="$capture/body" \
+          ICU_CAPTURE_METADATA_PATH="$capture/meta" \
+            ./build/exec/icu get http://127.0.0.1:18080/redirect/start > "$capture/stdout"
+          test ! -s "$capture/stdout"
+          test "$(cat "$capture/body")" = 'GET /redirect/final?via=absolute'
+          grep -Fx "$(printf 'http_status\t200')" "$capture/meta"
+          grep -Fx "$(printf 'resolved_url\thttp://127.0.0.1:18080/redirect/final?via=absolute')" "$capture/meta"
+          grep -Fx "$(printf 'redirect_count\t2')" "$capture/meta"
+          grep -Fx "$(printf 'content_type\ttext/plain; charset=utf-8')" "$capture/meta"
+
+          if ICU_CAPTURE_BODY_PATH="$capture/only-body" \
+              ./build/exec/icu get http://127.0.0.1:18080/plain > "$capture/partial.stdout" 2>/dev/null; then
+            echo 'single unpaired output wrongly accepted' >&2
+            exit 1
+          fi
+          test ! -e "$capture/only-body"
+          if ICU_CAPTURE_BODY_PATH="$capture/meta" \
+             ICU_CAPTURE_METADATA_PATH="$capture/meta" \
+              ./build/exec/icu get http://127.0.0.1:18080/plain > "$capture/same.stdout" 2>/dev/null; then
+            echo 'same output path wrongly accepted' >&2
+            exit 1
+          fi
+          test ! -s "$capture/same.stdout"
+          test "$(./build/exec/icu get http://127.0.0.1:18080/plain)" = 'GET /plain'
+
       - name: Show server log on failure
         if: failure()
         run: cat "$RUNNER_TEMP/icu-server.log" 2>/dev/null || true

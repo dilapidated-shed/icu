@@ -117,6 +117,30 @@ Current intentional limits:
 - URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
 - URL userinfo and IPv6 literals are not supported yet
 
+## Optional private response capture
+
+The ordinary command writes exact response bytes to stdout. Browser acquisition
+can instead set **both** `ICU_CAPTURE_BODY_PATH` and `ICU_CAPTURE_METADATA_PATH`
+to different, absolute, initially absent paths inside an owner-private directory,
+then run the **same ICU command**:
+
+```sh
+ICU_CAPTURE_BODY_PATH="$private/body" \
+ICU_CAPTURE_METADATA_PATH="$private/metadata" \
+  icu get https://example.com/
+```
+
+The existing binary-safe transport captures at most 8 MiB, refuses unsupported
+framing and truncated declared lengths, and creates mode-0600 files without
+following an existing output symlink. A nonzero exit never authorizes these bytes
+as a resource. The metadata includes `http_status`, `content_type`,
+`content_encoding`, `received_length`, `utf8`, `resolved_url` and `redirect_count`.
+The final URL reflects ICU's actual followed endpoint, not displayed HTML.
+
+This is a trusted process boundary, not a renderer API. A browser must own and
+validate its private directory, requested URL, lifetime, freshness, size and
+result integrity. Physical Android/DEX, Shizuku, Arena and UI handoff are separate.
+
 ## Build
 
 Requirements: the Edriç/Idriç compiler fork, an installed `idric_net` package,
