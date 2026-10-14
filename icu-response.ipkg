@@ -1,0 +1,5 @@
+package icu_response
+version = 0.1.0
+depends = idric_net
+sourcedir = "src"
+modules = Response

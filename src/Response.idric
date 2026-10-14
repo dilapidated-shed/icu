@@ -1,0 +1,82 @@
+module Response
+
+import Data.Text
+import Data.List
+import Data.List1
+import Network.HTTP
+import Network.Types
+import Network.URL
+import System.File
+import System.Directory
+
+-- OS failure is part of the effectful result, not a totality promise.
+%default covering
+
+public export
+record HTTPResponse where
+  constructor Make_HTTP_Response
+  status : Int
+  body : Text
+
+-- The existing ICU socket/OpenSSL provider owns these calls. Private temporary
+-- directories prevent PID collisions and hostile pre-existing response files.
+%foreign "C:icu_response_directory,libicu_transport"
+primitive_response_directory : PrimIO Text
+
+%foreign "C:icu_fetch_http_with_credentials,libicu_transport"
+primitive_fetch_http : Text → Int → Text → Text → Int → Text → Text → Text → PrimIO Int
+
+%foreign "C:icu_fetch_https_with_credentials,libicu_transport"
+primitive_fetch_https : Text → Int → Text → Text → Int → Text → Text → Text → PrimIO Int
+
+credential_names : List HeaderName → Text
+credential_names names = concatMap (\name ⇒ header_name_text name ++ "\n") names
+
+fetch_prepared : url → RenderedRequest → Text → Text → Text → IO Int
+fetch_prepared (http_url name port _) wire body_path metadata_path credentials =
+  primIO (primitive_fetch_http (host_name_string name) (cast (destination_port_number port))
+    (http_request_head_text (rendered_request_head wire)) (http_body_string (rendered_request_body wire))
+    (cast (byte_count_number (rendered_request_body_length wire))) body_path metadata_path credentials)
+fetch_prepared (https_url name port _) wire body_path metadata_path credentials =
+  primIO (primitive_fetch_https (host_name_string name) (cast (destination_port_number port))
+    (http_request_head_text (rendered_request_head wire)) (http_body_string (rendered_request_body wire))
+    (cast (byte_count_number (rendered_request_body_length wire))) body_path metadata_path credentials)
+
+metadata_fields : Text → List (Text, Text)
+metadata_fields text = mapMaybe row (lines text)
+  where
+    row : Text → Maybe (Text, Text)
+    row line = case forget (split (≟ '\t') line) of
+      [key, value] ⇒ Just (key, value)
+      _ ⇒ Nothing
+
+understand_response : Int → Text → Text → Either Text HTTPResponse
+understand_response transport_code metadata body =
+  if not (transport_code ≟ 0 || transport_code ≟ 10) then Left "ICU transport or framing failed"
+  else let fields = metadata_fields metadata in
+    case (lookup "http_status" fields, lookup "utf8" fields, lookup "content_encoding" fields) of
+      (Just status_text, Just "valid", Just "identity") ⇒
+        let status : Int = cast status_text in
+          if length status_text ≟ 3 && all isDigit (unpack status_text) && status >= 100 && status <= 599
+          then Right (Make_HTTP_Response status body)
+          else Left "invalid HTTP status metadata"
+      _ ⇒ Left "invalid, compressed or non-UTF-8 response"
+
+public export
+fetch_response : request → List request_header → IO (Either Text HTTPResponse)
+fetch_response value headers = case render_request_parts_with_headers value headers of
+  Left _ ⇒ pure (Left "invalid request headers")
+  Right wire ⇒ do
+    directory ← primIO primitive_response_directory
+    if directory ≟ "" then pure (Left "could not create private response directory") else do
+      let body_path = directory ++ "/body"
+      let metadata_path = directory ++ "/metadata"
+      result ← fetch_prepared (request_url value) wire body_path metadata_path (credential_names (credential_header_names headers))
+      body ← readFile body_path
+      metadata ← readFile metadata_path
+      _ ← removeFile body_path
+      _ ← removeFile metadata_path
+      removeDir directory
+      pure (case (body, metadata) of
+        (Right body, Right metadata) ⇒ understand_response result metadata body
+        _ ⇒ Left "could not read captured ICU response")
