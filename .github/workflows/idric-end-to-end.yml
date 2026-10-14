@@ -184,10 +184,10 @@ jobs:
             ./build/exec/icu get http://127.0.0.1:18080/redirect/start > "$capture/stdout"
           test ! -s "$capture/stdout"
           test "$(cat "$capture/body")" = 'GET /redirect/final?via=absolute'
-          grep -Fx "$(printf 'http_status\\t200')" "$capture/meta"
-          grep -Fx "$(printf 'resolved_url\\thttp://127.0.0.1:18080/redirect/final?via=absolute')" "$capture/meta"
-          grep -Fx "$(printf 'redirect_count\\t2')" "$capture/meta"
-          grep -Fx "$(printf 'content_type\\ttext/plain; charset=utf-8')" "$capture/meta"
+          grep -Fx "$(printf 'http_status\t200')" "$capture/meta"
+          grep -Fx "$(printf 'resolved_url\thttp://127.0.0.1:18080/redirect/final?via=absolute')" "$capture/meta"
+          grep -Fx "$(printf 'redirect_count\t2')" "$capture/meta"
+          grep -Fx "$(printf 'content_type\ttext/plain; charset=utf-8')" "$capture/meta"
 
           if ICU_CAPTURE_BODY_PATH="$capture/only-body" \
               ./build/exec/icu get http://127.0.0.1:18080/plain > "$capture/partial.stdout" 2>/dev/null; then
