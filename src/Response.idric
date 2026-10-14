@@ -3,10 +3,12 @@ module Response
 import Data.Text
 import Data.List
 import Data.List1
+import Data.Buffer
 import Network.HTTP
 import Network.Types
 import Network.URL
 import System.File
+import System.File.Buffer
 import System.Directory
 
 -- OS failure is part of the effectful result, not a totality promise.
@@ -17,6 +19,52 @@ record HTTPResponse where
   constructor Make_HTTP_Response
   status : Int
   body : Text
+
+public export
+data CaptureFailure = InvalidRequest | ConnectionFailure | TLSFailure
+                    | RequestWriteFailure | MalformedResponse | RedirectFailure
+                    | TruncatedResponse | Timeout | ResourceLimit
+                    | CaptureIOFailure | InvalidUTF8 | UnsupportedEncoding
+                    | ProxyFailure
+
+public export
+failure_description : CaptureFailure → Text
+failure_description InvalidRequest = "invalid request headers"
+failure_description ConnectionFailure = "ICU connection failed"
+failure_description TLSFailure = "ICU TLS verification or handshake failed"
+failure_description RequestWriteFailure = "ICU request write failed"
+failure_description MalformedResponse = "ICU malformed or unsupported HTTP framing"
+failure_description RedirectFailure = "ICU redirect failed"
+failure_description TruncatedResponse = "ICU response body length mismatch"
+failure_description Timeout = "ICU request timed out"
+failure_description ResourceLimit = "ICU captured response exceeds 8 MiB"
+failure_description CaptureIOFailure = "ICU private response capture failed"
+failure_description InvalidUTF8 = "ICU response is not valid UTF-8"
+failure_description UnsupportedEncoding = "ICU response encoding is unsupported"
+failure_description ProxyFailure = "ICU HTTPS proxy tunnel failed"
+
+public export
+record HTTPBytesResponse where
+  constructor Make_HTTP_Bytes_Response
+  status : Int
+  body_bytes : Buffer
+  encoding : Text
+  content_type : Text
+  utf8_valid : Bool
+
+capture_failure : Int → CaptureFailure
+capture_failure 2 = InvalidRequest
+capture_failure 3 = InvalidRequest
+capture_failure 4 = ConnectionFailure
+capture_failure 5 = TLSFailure
+capture_failure 6 = RequestWriteFailure
+capture_failure 8 = RedirectFailure
+capture_failure 9 = TruncatedResponse
+capture_failure 11 = Timeout
+capture_failure 12 = ResourceLimit
+capture_failure 13 = MalformedResponse
+capture_failure 14 = ProxyFailure
+capture_failure _ = CaptureIOFailure
 
 -- The existing ICU socket/OpenSSL provider owns these calls. Private temporary
 -- directories prevent PID collisions and hostile pre-existing response files.
@@ -50,33 +98,70 @@ metadata_fields text = mapMaybe row (lines text)
       [key, value] ⇒ Just (key, value)
       _ ⇒ Nothing
 
-understand_response : Int → Text → Text → Either Text HTTPResponse
-understand_response transport_code metadata body =
-  if not (transport_code ≟ 0 || transport_code ≟ 10) then Left "ICU transport or framing failed"
+understand_bytes : Int → Text → Buffer → Either CaptureFailure HTTPBytesResponse
+understand_bytes transport_code metadata bytes =
+  if not (transport_code ≟ 0 || transport_code ≟ 10) then Left (capture_failure transport_code)
   else let fields = metadata_fields metadata in
-    case (lookup "http_status" fields, lookup "utf8" fields, lookup "content_encoding" fields) of
-      (Just status_text, Just "valid", Just "identity") ⇒
+    case (lookup "http_status" fields, lookup "utf8" fields,
+          lookup "content_encoding" fields, lookup "content_type" fields) of
+      (Just status_text, Just utf8, Just encoding, Just content_type) ⇒
         let status : Int = cast status_text in
           if length status_text ≟ 3 && all isDigit (unpack status_text) && status >= 100 && status <= 599
-          then Right (Make_HTTP_Response status body)
-          else Left "invalid HTTP status metadata"
-      _ ⇒ Left "invalid, compressed or non-UTF-8 response"
+          then Right (Make_HTTP_Bytes_Response status bytes encoding content_type (utf8 ≟ "valid"))
+          else Left MalformedResponse
+      _ ⇒ Left MalformedResponse
+
+supported_charset : Text → Bool
+supported_charset content_type = all allowed (drop 1 (forget (split (≟ ';') content_type)))
+  where
+    allowed : Text → Bool
+    allowed parameter =
+      case map (toLower . trim) (forget (split (≟ '=') parameter)) of
+        ["charset", value] ⇒ elem value ["utf-8", "\"utf-8\"", "us-ascii", "\"us-ascii\""]
+        ["charset"] ⇒ False
+        _ ⇒ True
 
 public export
-fetch_response : request → List request_header → IO (Either Text HTTPResponse)
-fetch_response value headers = case render_request_parts_with_headers value headers of
-  Left _ ⇒ pure (Left "invalid request headers")
+response_text : HTTPBytesResponse → IO (Either CaptureFailure HTTPResponse)
+response_text captured =
+  if toLower captured.encoding /= "identity" || not (supported_charset captured.content_type)
+    then pure (Left UnsupportedEncoding)
+  else if not captured.utf8_valid then pure (Left InvalidUTF8)
+  else do
+    size ← rawSize captured.body_bytes
+    body ← getString captured.body_bytes 0 size
+    pure (Right (Make_HTTP_Response captured.status body))
+
+public export
+fetch_bytes_response : request → List request_header → IO (Either CaptureFailure HTTPBytesResponse)
+fetch_bytes_response value headers = case render_request_parts_with_headers value headers of
+  Left _ ⇒ pure (Left InvalidRequest)
   Right wire ⇒ do
     directory ← primIO primitive_response_directory
-    if directory ≟ "" then pure (Left "could not create private response directory") else do
+    if directory ≟ "" then pure (Left CaptureIOFailure) else do
       let body_path = directory ++ "/body"
       let metadata_path = directory ++ "/metadata"
       result ← fetch_prepared (request_url value) wire body_path metadata_path (credential_names (credential_header_names headers))
-      body ← readFile body_path
+      body ← if result ≟ 0 || result ≟ 10 then createBufferFromFile body_path
+              else pure (Left FileReadError)
       metadata ← readFile metadata_path
       _ ← removeFile body_path
       _ ← removeFile metadata_path
       removeDir directory
       pure (case (body, metadata) of
-        (Right body, Right metadata) ⇒ understand_response result metadata body
-        _ ⇒ Left "could not read captured ICU response")
+        (Right body, Right metadata) ⇒ understand_bytes result metadata body
+        _ ⇒ if result ≟ 0 || result ≟ 10 then Left CaptureIOFailure
+             else Left (capture_failure result))
+
+-- Existing clients keep their text API, while binary callers request bytes.
+public export
+fetch_response : request → List request_header → IO (Either Text HTTPResponse)
+fetch_response value headers = do
+  captured ← fetch_bytes_response value headers
+  case captured of
+    Left failure ⇒ pure (Left (failure_description failure))
+    Right bytes ⇒ do
+      decoded ← response_text bytes
+      pure (case decoded of
+        Left failure ⇒ Left (failure_description failure)
+        Right response ⇒ Right response)
