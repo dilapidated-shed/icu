@@ -43,7 +43,9 @@ typedef struct {
     long long content_length;
     char content_type[256];
     char content_encoding[64];
+    char content_range[128];
     int invalid_framing;
+    int transfer_encoding_kind; /* 0 absent, 1 single chunked, 2 unsupported/ambiguous */
 } response_head;
 
 /* Captures are private even when the caller's umask is permissive. */
@@ -570,9 +572,15 @@ static int read_response_head(connection *connection, response_head *head,
                 head->content_length = parse_content_length(length_text);
             }
             int lengths = header_count(headers, head_length, "Content-Length");
+            int transfers = header_count(headers, head_length, "Transfer-Encoding");
+            char transfer[64];
+            int transfer_copied = copy_header_value(headers, head_length,
+                "Transfer-Encoding", transfer, sizeof(transfer));
+            head->transfer_encoding_kind = transfers == 0 ? 0 :
+                transfers == 1 && transfer_copied && strcasecmp(transfer, "chunked") == 0 ? 1 : 2;
             head->invalid_framing = lengths > 1 ||
                 (lengths == 1 && head->content_length < 0) ||
-                header_count(headers, head_length, "Transfer-Encoding") != 0;
+                head->transfer_encoding_kind == 2 || (transfers != 0 && lengths != 0);
             (void)copy_header_value(headers, head_length, "Content-Type",
                                     head->content_type, sizeof(head->content_type));
             int encoding_copied = copy_header_value(headers, head_length, "Content-Encoding",
@@ -580,6 +588,10 @@ static int read_response_head(connection *connection, response_head *head,
             int encodings = header_count(headers, head_length, "Content-Encoding");
             if (encodings > 1 || (encodings == 1 && !encoding_copied))
                 strcpy(head->content_encoding, "unsupported");
+            int ranges = header_count(headers, head_length, "Content-Range");
+            int range_copied = copy_header_value(headers, head_length, "Content-Range",
+                                    head->content_range, sizeof(head->content_range));
+            if (ranges > 1 || (ranges == 1 && !range_copied)) head->invalid_framing = 1;
 
             size_t available_body = header_bytes - head_length;
             if (available_body > body_capacity) {
@@ -629,6 +641,87 @@ static int copy_remaining_body(connection *connection, FILE *output,
         }
         *received_length += (size_t)amount;
     }
+}
+
+typedef struct {
+    connection *opened;
+    const unsigned char *prefix;
+    size_t prefix_length, prefix_position;
+    unsigned char buffer[16384];
+    size_t position, length;
+} chunk_reader;
+
+static int chunk_byte(chunk_reader *reader, unsigned char *byte) {
+    if (reader->prefix_position < reader->prefix_length) {
+        *byte = reader->prefix[reader->prefix_position++];
+        return 1;
+    }
+    if (reader->position == reader->length) {
+        ssize_t amount = read_some(reader->opened, (char *)reader->buffer, sizeof(reader->buffer));
+        if (amount <= 0) return (int)amount;
+        reader->position = 0;
+        reader->length = (size_t)amount;
+    }
+    *byte = reader->buffer[reader->position++];
+    return 1;
+}
+
+static int chunk_crlf(chunk_reader *reader) {
+    unsigned char first = 0, second = 0;
+    return chunk_byte(reader, &first) == 1 && first == '\r' &&
+           chunk_byte(reader, &second) == 1 && second == '\n';
+}
+
+/* Bounded RFC 9112 section 7.1 subset. Extensions and trailers are explicitly
+ * unsupported; they never become entity bytes. Connection: close is requested. */
+static int copy_chunked_body(connection *opened, FILE *output,
+                             const char *prefix, size_t prefix_length,
+                             size_t *received_length) {
+    chunk_reader reader = {0};
+    reader.opened = opened;
+    reader.prefix = (const unsigned char *)prefix;
+    reader.prefix_length = prefix_length;
+    *received_length = 0;
+    opened->failure_code = 13;
+    for (size_t chunks = 0; chunks < 65536; ++chunks) {
+        size_t chunk_length = 0, digits = 0;
+        unsigned char byte = 0;
+        for (;;) {
+            if (chunk_byte(&reader, &byte) != 1) return 0;
+            if (byte == '\r') {
+                if (digits == 0 || chunk_byte(&reader, &byte) != 1 || byte != '\n') return 0;
+                break;
+            }
+            unsigned int digit;
+            if (byte >= '0' && byte <= '9') digit = byte - '0';
+            else if (byte >= 'a' && byte <= 'f') digit = byte - 'a' + 10u;
+            else if (byte >= 'A' && byte <= 'F') digit = byte - 'A' + 10u;
+            else return 0;
+            if (++digits > 128) return 0;
+            if (chunk_length > (MAX_CAPTURE_BYTES - digit) / 16u) {
+                opened->failure_code = 12;
+                return 0;
+            }
+            chunk_length = chunk_length * 16u + digit;
+        }
+        if (chunk_length == 0) {
+            if (!chunk_crlf(&reader)) return 0;
+            int ended = chunk_byte(&reader, &byte);
+            if (ended != 0) return 0;
+            return fflush(output) == 0;
+        }
+        if (chunk_length > MAX_CAPTURE_BYTES - *received_length) {
+            opened->failure_code = 12;
+            return 0;
+        }
+        for (size_t index = 0; index < chunk_length; ++index) {
+            if (chunk_byte(&reader, &byte) != 1 || fputc(byte, output) == EOF) return 0;
+        }
+        *received_length += chunk_length;
+        if (!chunk_crlf(&reader)) return 0;
+    }
+    opened->failure_code = 12;
+    return 0;
 }
 
 static int continuation(unsigned char byte) {
@@ -722,14 +815,18 @@ static int write_response_metadata(const char *path, const response_head *head,
         "http_status\t%d\n"
         "content_type\t%s\n"
         "content_encoding\t%s\n"
+        "content_range\t%s\n"
         "declared_length\t%lld\n"
         "received_length\t%zu\n"
+        "transfer_decoding\t%s\n"
         "utf8\t%s\n",
         head->status,
         head->content_type[0] == '\0' ? "unknown" : head->content_type,
         head->content_encoding[0] == '\0' ? "identity" : head->content_encoding,
+        head->content_range[0] == '\0' ? "absent" : head->content_range,
         head->content_length,
         received_length,
+        head->transfer_encoding_kind == 1 ? "chunked" : "identity",
         valid_utf8_file(body_path) == 1 ? "valid" : "invalid") > 0;
     if (fclose(file) != 0) ok = 0;
     return ok;
@@ -989,7 +1086,13 @@ static char *rewrite_get_request_with_policy(const char *request, const endpoint
         return NULL;
     }
 
-    int written = snprintf(output, capacity, "GET %s HTTP/1.0\r\n", next->target);
+    const char *version = NULL;
+    if (line_end - request >= 9 && memcmp(line_end - 9, " HTTP/1.0", 9) == 0)
+        version = "HTTP/1.0";
+    if (line_end - request >= 9 && memcmp(line_end - 9, " HTTP/1.1", 9) == 0)
+        version = "HTTP/1.1";
+    if (version == NULL) { free(output); return NULL; }
+    int written = snprintf(output, capacity, "GET %s %s\r\n", next->target, version);
     if (written < 0 || (size_t)written >= capacity) {
         free(output);
         return NULL;
@@ -1144,13 +1247,15 @@ static int send_request(const char *host, int port, const char *request_headers,
                          redirect_status(head.status) && head.has_location;
         if (!can_follow) {
             FILE *output = stdout;
+            if (head.invalid_framing) {
+                close_connection(&opened);
+                free(current_request);
+                complain(head.transfer_encoding_kind == 2 ?
+                    "HTTP transfer encoding is unsupported or ambiguous" :
+                    "malformed or conflicting HTTP Content-Length framing");
+                return 13;
+            }
             if (body_output_path != NULL) {
-                if (head.invalid_framing) {
-                    close_connection(&opened);
-                    free(current_request);
-                    complain("unsupported or malformed HTTP body framing");
-                    return 13;
-                }
                 if (head.content_length > MAX_CAPTURE_BYTES) {
                     close_connection(&opened);
                     free(current_request);
@@ -1166,8 +1271,9 @@ static int send_request(const char *host, int port, const char *request_headers,
                 }
             }
             size_t received_length = 0;
-            int copied = copy_remaining_body(&opened, output, body_prefix,
-                                             response_body_length, &received_length);
+            int copied = head.transfer_encoding_kind == 1 ?
+                copy_chunked_body(&opened, output, body_prefix, response_body_length, &received_length) :
+                copy_remaining_body(&opened, output, body_prefix, response_body_length, &received_length);
             int copy_failure = opened.failure_code;
             if (body_output_path != NULL && fclose(output) != 0) copied = 0;
             int metadata_written = write_response_metadata(metadata_output_path, &head,
