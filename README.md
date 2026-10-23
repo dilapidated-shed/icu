@@ -51,7 +51,9 @@ icu get https://example.com/
 icu post https://example.com/message hello
 ```
 
-The request model currently renders HTTP/1.0 plus `Connection: close` and asks
+The command defaults to HTTP/1.0. `icu --http1.1 get URL` and
+`icu --http1.1 post URL BODY` select HTTP/1.1; `--http1.0` selects the default
+explicitly. Both versions send `Connection: close` and ask
 for `Accept-Encoding: identity`, so HTML and image bodies can be consumed
 directly without first adding gzip/brotli decoding. POST text is UTF-8.
 Idric-Net computes the encoded `ByteCount`; ICU unwraps that value only when it
@@ -117,10 +119,35 @@ Current intentional limits:
 - URL authority and request target must be visible ASCII; spaces and Unicode must be percent-encoded
 - URL userinfo and IPv6 literals are not supported yet
 
+## Optional private response capture
+
+The ordinary command writes exact response bytes to stdout. Browser acquisition
+can instead set **both** `ICU_CAPTURE_BODY_PATH` and `ICU_CAPTURE_METADATA_PATH`
+to different, absolute, initially absent paths inside an owner-private directory,
+then run the **same ICU command**:
+
+```sh
+ICU_CAPTURE_BODY_PATH="$private/body" \
+ICU_CAPTURE_METADATA_PATH="$private/metadata" \
+  icu get https://example.com/
+```
+
+The existing binary-safe transport captures at most 8 MiB, refuses unsupported
+framing and truncated declared lengths, and creates mode-0600 files without
+following an existing output symlink. A nonzero exit never authorizes these bytes
+as a resource. The metadata includes `http_status`, `content_type`,
+`content_encoding`, `received_length`, `utf8`, `resolved_url` and `redirect_count`.
+The final URL reflects ICU's actual followed endpoint, not displayed HTML.
+
+This is a trusted process boundary, not a renderer API. A browser must own and
+validate its private directory, requested URL, lifetime, freshness, size and
+result integrity. Physical Android/DEX, Shizuku, Arena and UI handoff are separate.
+
 ## Build
 
-Requirements: the Edriç/Idriç compiler fork, an installed `idric_net` package,
-a C11 compiler, and OpenSSL.
+Requirements: the maintained Idriç compiler, an installed `idric_net` package,
+the pinned ICK native compiler, and OpenSSL. Pass ICK's verified executable
+as the Make variable `ICK`; the native build refuses an absent compiler.
 
 Install Idric-Net with the same compiler/prefix used for ICU:
 
@@ -128,7 +155,7 @@ Install Idric-Net with the same compiler/prefix used for ICU:
 cd ../Idric-Net
 idris2 --install idric-net.ipkg
 cd ../icu
-make IDRIC=/opt/Idric/build/exec/idris2
+make ICK=/verified/ick-stage/bin/gcc IDRIC=/verified/Idric/_/build/exec/idris2
 ```
 
 CI pins the exact Idric-Net commit it installs before compiling ICU, so the
@@ -145,6 +172,19 @@ repo-local transport library:
 
 `make check-native` compiles the native boundary with warnings promoted to
 errors.
+
+The `icu_response` library also exposes `fetch_bytes_response_at_version`
+and `fetch_range_response`. Exact ranges use HTTP/1.1 and reject wrong status,
+offsets, final offset/total, encodings and entity-byte counts in Idriç.
+`HTTPBytesResponse` retains the actual resolved URL, redirect count and
+Content-Range alongside the bytes. Rebuild consumers of this source record.
+
+Android uses one adapter, `android/jni_transport.c`, and one NDK build recipe,
+`android/Makefile`, optionally invoked through `android/build-native.grease`.
+The original `org.isomorphisms.icu.ICU` native names remain ABI aliases for
+existing callers; direct DEX uses `Idric.Generated`. Both share the same strict
+UTF-16 to UTF-8 conversion and HTTP provider. No Java source is generated.
+Building this library does not establish a working ICU DEX or phone package.
 
 ## Reference source
 

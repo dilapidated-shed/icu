@@ -96,6 +96,13 @@ send_request value = do
   let prepared_request = prepare_request value
   send_prepared_request (request_url value) prepared_request
 
+public export
+send_request_at_version : http_version → request → IO (Either String transport_result)
+send_request_at_version version value =
+  case render_request_parts_at_version version value [] of
+    Left problem => pure (Left problem)
+    Right prepared => send_prepared_request (request_url value) prepared
+
 prepare_request value =
   render_request_parts value
 

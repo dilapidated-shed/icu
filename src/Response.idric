@@ -51,6 +51,9 @@ record HTTPBytesResponse where
   encoding : Text
   content_type : Text
   utf8_valid : Bool
+  content_range : Text
+  resolved_url : Text
+  redirect_count : Number
 
 capture_failure : Int → CaptureFailure
 capture_failure 2 = InvalidRequest
@@ -64,6 +67,7 @@ capture_failure 11 = Timeout
 capture_failure 12 = ResourceLimit
 capture_failure 13 = MalformedResponse
 capture_failure 14 = ProxyFailure
+capture_failure 15 = UnsupportedEncoding
 capture_failure _ = CaptureIOFailure
 
 -- The existing ICU socket/OpenSSL provider owns these calls. Private temporary
@@ -105,10 +109,17 @@ understand_bytes transport_code metadata bytes =
     case (lookup "http_status" fields, lookup "utf8" fields,
           lookup "content_encoding" fields, lookup "content_type" fields) of
       (Just status_text, Just utf8, Just encoding, Just content_type) ⇒
-        let status : Int = cast status_text in
-          if length status_text ≟ 3 && all isDigit (unpack status_text) && status >= 100 && status <= 599
-          then Right (Make_HTTP_Bytes_Response status bytes encoding content_type (utf8 ≟ "valid"))
-          else Left MalformedResponse
+        case (lookup "content_range" fields, lookup "resolved_url" fields,
+              lookup "redirect_count" fields) of
+          (Just content_range, Just resolved_url, Just redirects) ⇒
+            let status : Int = cast status_text in
+              if length status_text ≟ 3 && all isDigit (unpack status_text) && status >= 100 && status <= 599
+              then if length redirects > 0 && all isDigit (unpack redirects) && cast {to = Number} redirects <= 8
+                then Right (Make_HTTP_Bytes_Response status bytes encoding content_type (utf8 ≟ "valid")
+                  content_range resolved_url (cast redirects))
+                else Left MalformedResponse
+              else Left MalformedResponse
+          _ ⇒ Left MalformedResponse
       _ ⇒ Left MalformedResponse
 
 supported_charset : Text → Bool
@@ -133,8 +144,8 @@ response_text captured =
     pure (Right (Make_HTTP_Response captured.status body))
 
 public export
-fetch_bytes_response : request → List request_header → IO (Either CaptureFailure HTTPBytesResponse)
-fetch_bytes_response value headers = case render_request_parts_with_headers value headers of
+fetch_bytes_response_at_version : http_version → request → List request_header → IO (Either CaptureFailure HTTPBytesResponse)
+fetch_bytes_response_at_version version value headers = case render_request_parts_at_version version value headers of
   Left _ ⇒ pure (Left InvalidRequest)
   Right wire ⇒ do
     directory ← primIO primitive_response_directory
@@ -152,6 +163,45 @@ fetch_bytes_response value headers = case render_request_parts_with_headers valu
         (Right body, Right metadata) ⇒ understand_bytes result metadata body
         _ ⇒ if result ≟ 0 || result ≟ 10 then Left CaptureIOFailure
              else Left (capture_failure result))
+
+public export
+fetch_bytes_response : request → List request_header → IO (Either CaptureFailure HTTPBytesResponse)
+fetch_bytes_response = fetch_bytes_response_at_version http_one_zero
+
+number : Text → Maybe Number
+number text = if length text > 0 && all isDigit (unpack text)
+  then Just (cast text) else Nothing
+
+public export
+range_matches : Number → Number → Text → Bool
+range_matches start size value = size > 0 && case forget (split (≟ ' ') value) of
+  ["bytes", interval] ⇒ case forget (split (≟ '/') interval) of
+    [bounds, total_text] ⇒ case forget (split (≟ '-') bounds) of
+      [first, last] ⇒ case (number first, number last, number total_text) of
+        (Just actual_start, Just actual_end, Just actual_total) ⇒
+          actual_start ≟ start && actual_end + 1 ≟ start + size && actual_total > actual_end
+        _ ⇒ False
+      _ ⇒ False
+    _ ⇒ False
+  _ ⇒ False
+
+-- Exact finite ranges are interpreted here, in Idriç, against the captured
+-- entity bytes. A successful socket operation alone never admits a range.
+public export
+fetch_range_response : url → Number → Number → IO (Either CaptureFailure HTTPBytesResponse)
+fetch_range_response destination start size =
+  if size ≟ 0 || size > 8388608 then pure (Left InvalidRequest) else
+  case make_header "Range" ("bytes=" ++ show start ++ "-" ++ show (minus (start + size) 1)) of
+    Left _ ⇒ pure (Left InvalidRequest)
+    Right header ⇒ do
+      captured ← fetch_bytes_response_at_version http_one_one (get destination) [header]
+      case captured of
+        Left failure ⇒ pure (Left failure)
+        Right response ⇒ do
+          actual_size ← rawSize response.body_bytes
+          pure (if response.status ≟ 206 && toLower response.encoding ≟ "identity" &&
+                   cast {to = Number} actual_size ≟ size && range_matches start size response.content_range
+            then Right response else Left MalformedResponse)
 
 -- Existing clients keep their text API, while binary callers request bytes.
 public export
