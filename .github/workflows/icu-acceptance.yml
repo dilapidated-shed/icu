@@ -1,0 +1,123 @@
+name: ICU native and Android boundaries
+on:
+  pull_request:
+  push:
+    branches: [icu, transport/c67-capture-final-url]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric
+          ref: 740bbf2b1d9e811fd00c719c3473eede17ceea3b
+          path: .tools/Idric
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric-Net
+          ref: b21801b72acb8ab835c297bbe298af8599550134
+          path: .tools/Idric-Net
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/ai-ci
+          ref: bd834cd7ac965f050493c072f83f221c4b400dd3
+          path: .tools/ai-ci
+      - name: Qualify exact native ICK compiler
+        id: ick
+        uses: isomorphisms/ai-ci/ick-host@32cb45b3a3a257aeb07881c75f3b846495cfb2c9
+      - name: Provision pinned compiled Grease and original launcher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/grease/bin"
+          gh api repos/dilapidated-shed/grease/actions/artifacts/12192502970/zip > "$RUNNER_TEMP/grease.zip"
+          printf '%s  %s\n' 295329ec3bb419d90364fcb5937eafe4306b03f68b7aaa63089dadde8082ffb5 "$RUNNER_TEMP/grease.zip" | sha256sum -c -
+          unzip -p "$RUNNER_TEMP/grease.zip" _bin/cxx-asan/ysh > "$RUNNER_TEMP/grease/bin/ysh"
+          curl --fail --location --silent --show-error https://github.com/dilapidated-shed/grease/releases/download/tablet-aarch64-9b3dc8904891/grease-aarch64-termux.tar.gz -o "$RUNNER_TEMP/grease-launcher.tar.gz"
+          printf '%s  %s\n' 3ddb962ef313e528e525fa03518f494577e921c2201ecb49f7a11f2fbf4e82b2 "$RUNNER_TEMP/grease-launcher.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/grease-launcher.tar.gz" -C "$RUNNER_TEMP/grease" ./bin/grease
+          printf '%s  %s\n' 37088097c36a2f82cf45aaea9392e4a4cf16155fecb9da87d08a9c7fb4d92e4a "$RUNNER_TEMP/grease/bin/grease" | sha256sum -c -
+          printf '%s  %s\n' 7e31cd05b7a9d8fb2a4a9e003a7f3fcb0159138506d17f0fb28da8cbe22aa85c "$RUNNER_TEMP/grease/bin/ysh" | sha256sum -c -
+          chmod 755 "$RUNNER_TEMP/grease/bin/grease" "$RUNNER_TEMP/grease/bin/ysh"
+          printf '%s\n' "$RUNNER_TEMP/grease/bin" >> "$GITHUB_PATH"
+      - name: Bootstrap maintained Idriç and install network types
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+          .tools/Idric/edric bootstrap
+          printf '%s\n' "$GITHUB_WORKSPACE/.tools/Idric/_/.tools/bin" >> "$GITHUB_PATH"
+          printf 'IDRIS2_PREFIX=%s\n' "$GITHUB_WORKSPACE/.tools/Idric/_/bootstrap-build" >> "$GITHUB_ENV"
+      - name: Build actual ICU and public response API
+        env:
+          ICK: ${{ steps.ick.outputs.compiler }}
+        run: |
+          cd .tools/Idric-Net
+          ../Idric/_/build/exec/idris2 --install idric-net.ipkg
+          cd ../..
+          make ICK="$ICK" IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
+          make check-native ICK="$ICK"
+          .tools/Idric/_/build/exec/idris2 --install icu-response.ipkg
+          .tools/Idric/_/build/exec/idris2 --build response-probe.ipkg
+          .tools/Idric/_/build/exec/idris2 -p idric_net tests/HttpTests.idric -o icu-http-tests
+          build/exec/icu-http-tests
+          "$ICK" -fno-link-libatomic -std=c11 -Wall -Wextra -Wpedantic -Werror -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" tests/JNIBoundaryTests.c -o build/jni-tests
+          build/jni-tests
+          mkdir -p build/acceptance
+          "$ICK" -fno-link-libatomic -std=c11 -O2 -Wall -Wextra -Werror .tools/ai-ci/icu/fixture.c -lssl -lcrypto -o build/acceptance/fixture
+          "$ICK" -fno-link-libatomic -std=c17 -O2 -Wall -Wextra -Werror .tools/ai-ci/src/aici.c -o build/acceptance/aici
+      - name: Exercise independent installed transport and command tests
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}
+        run: |
+          mkdir -p build/install/bin
+          cp -a build/exec/icu build/exec/icu_app build/exec/response-probe build/exec/response-probe_app build/install/bin/
+          cp libicu_transport.so build/install/bin/icu_app/
+          cp libicu_transport.so build/install/bin/response-probe_app/
+          grease .tools/ai-ci/icu/accept.grease "$GITHUB_WORKSPACE/build/install" "$GITHUB_WORKSPACE/build/acceptance" "$GITHUB_WORKSPACE/.tools/ai-ci" capture
+          grease .tools/ai-ci/icu/accept.grease "$GITHUB_WORKSPACE/build/install" "$GITHUB_WORKSPACE/build/acceptance" "$GITHUB_WORKSPACE/.tools/ai-ci" proxy
+          grease .tools/ai-ci/icu/command-accept.grease "$GITHUB_WORKSPACE/build/install/bin/icu" "$GITHUB_WORKSPACE/build/install/bin/response-probe" "$GITHUB_WORKSPACE/build/acceptance/fixture" "$GITHUB_WORKSPACE/build/acceptance/command"
+          grease .tools/ai-ci/icu/reject-limit-mutant.grease "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/build/install" "${{ steps.ick.outputs.compiler }}" "$GITHUB_WORKSPACE/.tools/ai-ci" "$GITHUB_WORKSPACE/build/acceptance/limit-mutant"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: icu-native-acceptance
+          path: build/acceptance
+  android:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: openssl/openssl
+          ref: f4dc4d58b48d346a8270183f89acf826d459b0ca
+          path: .tools/openssl
+      - name: Install exact NDK
+        run: 'yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"'
+      - name: Build the maintained JNI boundary and ABI tests
+        env:
+          ANDROID_ABI: ${{ matrix.abi }}
+        run: |
+          make -f android/Makefile all tests ANDROID_ABI="$ANDROID_ABI" ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" OPENSSL_SOURCE="$GITHUB_WORKSPACE/.tools/openssl"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: icu-native-${{ matrix.abi }}
+          path: |
+            build/android/${{ matrix.abi }}/libicu_transport.so
+            build/android/${{ matrix.abi }}/native-receipt.tsv
+            build/android/${{ matrix.abi }}/native.sha256
+            build/android/${{ matrix.abi }}/elf-header.txt
+            build/android/${{ matrix.abi }}/dynamic.txt
+          if-no-files-found: error

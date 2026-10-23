@@ -14,7 +14,8 @@ usage =
   "  icu get  http://host/path\n" ++
   "  icu get  https://host/path\n" ++
   "  icu post http://host/path BODY\n" ++
-  "  icu post https://host/path BODY"
+  "  icu post https://host/path BODY\n" ++
+  "  icu --http1.0|--http1.1 get|post URL [BODY]"
 
 parse_command : List String → Either String request
 parse_command ["get", text] =
@@ -38,15 +39,20 @@ exit_status_number status = cast (process_exit_status_bits status)
 exit_code : transport_result → ExitCode
 exit_code result = cast (exit_status_number (process_exit_status result))
 
-run : List String → IO ()
-run arguments =
+run_at_version : http_version → List String → IO ()
+run_at_version version arguments =
   case parse_command arguments of
     Left problem => fail_with problem
     Right value => do
-      outcome ← send_request value
+      outcome ← send_request_at_version version value
       case outcome of
         Left problem => fail_with problem
         Right result => exitWith (exit_code result)
+
+run : List String → IO ()
+run ("--http1.1" :: arguments) = run_at_version http_one_one arguments
+run ("--http1.0" :: arguments) = run_at_version http_one_zero arguments
+run arguments = run_at_version http_one_zero arguments
 
 %export "dex:icu_checked_main"
 main : IO ()

@@ -15,8 +15,14 @@ Capture directories use mkdtemp (0700). Exclusive, non-symlink file creation
 uses 0600 regardless of umask. Both files and the directory are removed before
 returning a response/failure. Captured bodies are bounded to 8 MiB; both declared
 length and streaming size are checked. Invalid/duplicate Content-Length and
-Transfer-Encoding are rejected explicitly rather than decoded as body bytes.
-GET/POST requests use HTTP/1.0, identity encoding, and Connection: close.
+conflicting Transfer-Encoding are rejected explicitly. A single chunked coding
+is decoded within the 8 MiB capture bound; extensions, trailers, truncated chunks
+and extra bytes fail. Capture paths must have no symlink components and must
+name distinct absent files in an owner-private directory. Metadata is written
+only after complete body framing passes. Declared-length mismatch also fails
+for the stdout command. POST metadata retains its actual request target.
+Unexpected content encodings fail without a hidden decoder or runtime fallback.
+GET/POST support HTTP/1.0 and HTTP/1.1, identity encoding and Connection: close.
 
 Socket connection, reads and writes have 15-second bounds. DNS resolution uses
 the host resolver and has no ICU-specific deadline yet. This remaining limit
@@ -30,6 +36,7 @@ Preserve these exact executable fixtures while moving ownership; keep ICU's
 client result interpretation here. Do not delete this provider before installed
 ICU acceptance passes against the replacement.
 
-Kitchen owns tasks/icu-finish/build.grease. AICI owns icu/accept.grease and
-independent disposable HTTP/TLS fixtures. Flexible Pipes holds opening, build,
-acceptance and merge receipts. Android A1 and C67 physical execution is NOT_RUN.
+AICI owns `icu/accept.grease`, `icu/command-accept.grease` and independent
+disposable HTTP/TLS fixtures. This continuation is direct one-off work.
+Historical Kitchen/Flexible Pipes receipts remain historical. Android A1 and
+C67 physical execution is NOT_RUN.

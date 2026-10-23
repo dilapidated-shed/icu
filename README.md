@@ -51,7 +51,9 @@ icu get https://example.com/
 icu post https://example.com/message hello
 ```
 
-The request model currently renders HTTP/1.0 plus `Connection: close` and asks
+The command defaults to HTTP/1.0. `icu --http1.1 get URL` and
+`icu --http1.1 post URL BODY` select HTTP/1.1; `--http1.0` selects the default
+explicitly. Both versions send `Connection: close` and ask
 for `Accept-Encoding: identity`, so HTML and image bodies can be consumed
 directly without first adding gzip/brotli decoding. POST text is UTF-8.
 Idric-Net computes the encoded `ByteCount`; ICU unwraps that value only when it
@@ -143,8 +145,9 @@ result integrity. Physical Android/DEX, Shizuku, Arena and UI handoff are separa
 
 ## Build
 
-Requirements: the Edriç/Idriç compiler fork, an installed `idric_net` package,
-a C11 compiler, and OpenSSL.
+Requirements: the maintained Idriç compiler, an installed `idric_net` package,
+the pinned ICK native compiler, and OpenSSL. Pass ICK's verified executable
+as the Make variable `ICK`; the native build refuses an absent compiler.
 
 Install Idric-Net with the same compiler/prefix used for ICU:
 
@@ -152,7 +155,7 @@ Install Idric-Net with the same compiler/prefix used for ICU:
 cd ../Idric-Net
 idris2 --install idric-net.ipkg
 cd ../icu
-make IDRIC=/opt/Idric/build/exec/idris2
+make ICK=/verified/ick-stage/bin/gcc IDRIC=/verified/Idric/_/build/exec/idris2
 ```
 
 CI pins the exact Idric-Net commit it installs before compiling ICU, so the
@@ -169,6 +172,19 @@ repo-local transport library:
 
 `make check-native` compiles the native boundary with warnings promoted to
 errors.
+
+The `icu_response` library also exposes `fetch_bytes_response_at_version`
+and `fetch_range_response`. Exact ranges use HTTP/1.1 and reject wrong status,
+offsets, final offset/total, encodings and entity-byte counts in Idriç.
+`HTTPBytesResponse` retains the actual resolved URL, redirect count and
+Content-Range alongside the bytes. Rebuild consumers of this source record.
+
+Android uses one adapter, `android/jni_transport.c`, and one NDK build recipe,
+`android/Makefile`, optionally invoked through `android/build-native.grease`.
+The original `org.isomorphisms.icu.ICU` native names remain ABI aliases for
+existing callers; direct DEX uses `Idric.Generated`. Both share the same strict
+UTF-16 to UTF-8 conversion and HTTP provider. No Java source is generated.
+Building this library does not establish a working ICU DEX or phone package.
 
 ## Reference source
 
