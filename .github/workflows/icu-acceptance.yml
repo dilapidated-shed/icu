@@ -49,7 +49,8 @@ jobs:
         env:
           CATFOOD_ROOT: ${{ github.workspace }}/.tools/runtime
           CATFOOD_JOBS: '2'
-          CC: ${{ steps.ick.outputs.compiler }} -fno-link-libatomic
+          # Foreign CPython 2's false/true enums require its pre-C23 profile.
+          CC: ${{ steps.ick.outputs.compiler }} -fno-link-libatomic -std=gnu11
         run: sh .tools/catfood/build-tools.sh
       - name: Qualify search-only ancestors and reject the original transport
         env:

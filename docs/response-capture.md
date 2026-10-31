@@ -9,7 +9,7 @@ its own failure. HTTP rejection statuses retain their body and exact status.
 CaptureFailure distinguishes invalid request, connection, TLS, request write,
 malformed/unsupported framing, redirect, truncation, timeout, resource limit,
 capture I/O, invalid UTF-8 and unsupported encoding. The native integer result
-is converted at this boundary. Stdout commands keep their existing outcomes.
+is converted at this boundary. Stdout commands retain typed HTTP/framing errors.
 
 The native stdout command now retains HTTP failure status 10 and the transport's
 typed framing statuses, including malformed-response status 13. The TLS
