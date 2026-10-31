@@ -1,5 +1,6 @@
 /* Native provider tests retain its ordinary C ABI/source profile. */
 #include "../native/transport.c"
+#include <sys/wait.h>
 
 static int checks = 0;
 #define CHECK(value) do { ++checks; if (!(value)) { fprintf(stderr, "FAIL line %d\n", __LINE__); return 1; } } while (0)
@@ -32,6 +33,48 @@ static int length_case(const char *body, size_t length, long long declared, int 
     fclose(output);
     close(pair[0]);
     return passed == expected && (passed || opened.failure_code == 9);
+}
+
+/* Android permits traversal of /data ancestors without directory listing.
+ * Exercise that permission distinction with real kernel checks, including
+ * when this test is launched as root in a disposable container. */
+static int search_only_ancestor_case(void) {
+    char ancestor[4096];
+    const char *temporary = geteuid() == 0 ? "/tmp" : getenv("TMPDIR");
+    if (snprintf(ancestor, sizeof(ancestor), "%s/icu-search-XXXXXX",
+                 temporary == NULL ? "/tmp" : temporary) >= (int)sizeof(ancestor)) return 0;
+    if (mkdtemp(ancestor) == NULL) return 0;
+    char private_directory[4128], body[4160], metadata[4160];
+    snprintf(private_directory, sizeof(private_directory), "%s/private", ancestor);
+    snprintf(body, sizeof(body), "%s/body", private_directory);
+    snprintf(metadata, sizeof(metadata), "%s/metadata", private_directory);
+    int ok = mkdir(private_directory, 0700) == 0;
+    const uid_t test_uid = geteuid() == 0 ? (uid_t)65534 : geteuid();
+    const gid_t test_gid = getegid() == 0 ? (gid_t)65534 : getegid();
+    if (ok && geteuid() == 0)
+        ok = chown(ancestor, test_uid, test_gid) == 0 &&
+             chown(private_directory, test_uid, test_gid) == 0;
+    if (ok) ok = chmod(ancestor, 0111) == 0;
+    pid_t child = ok ? fork() : -1;
+    if (child == 0) {
+        if (geteuid() == 0 && (setgid(test_gid) != 0 || setuid(test_uid) != 0)) _exit(2);
+        int listing = open(ancestor, O_RDONLY | O_DIRECTORY);
+        if (listing >= 0) { close(listing); _exit(3); }
+        if (errno != EACCES || !capture_paths_valid(body, metadata)) _exit(4);
+        FILE *output = private_output(body, "wb");
+        if (output == NULL || fclose(output) != 0) _exit(5);
+        /* The repaired traversal must retain exclusive-leaf and private-owner
+         * rejection. Search permission does not grant broader capture rights. */
+        if (capture_paths_valid(body, metadata) || private_output(body, "wb") != NULL) _exit(6);
+        _exit(0);
+    }
+    int status = 0;
+    ok = child > 0 && waitpid(child, &status, 0) == child &&
+         WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (chmod(ancestor, 0700) != 0) ok = 0;
+    if (unlink(body) != 0 && errno != ENOENT) ok = 0;
+    if (rmdir(private_directory) != 0 || rmdir(ancestor) != 0) ok = 0;
+    return ok;
 }
 
 int main(void) {
@@ -110,6 +153,7 @@ int main(void) {
     CHECK(!capture_paths_valid(body, metadata));
     CHECK(private_output(body, "wb") == NULL);
     CHECK(unlink(body) == 0 && unlink(link) == 0 && rmdir(directory) == 0);
+    CHECK(search_only_ancestor_case());
     printf("PASS %d native framing, length, request-target and private-path checks\n", checks);
     return 0;
 }

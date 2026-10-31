@@ -1,0 +1,27 @@
+#!/usr/bin/env grease
+set -eu -o pipefail
+if (len(ARGV) !== 3) { echo 'usage: grease verify-search-path.grease ICU QUALIFIED_ICK NEW_EVIDENCE' >&2; exit 2 }
+var repository = ARGV[0]
+var compiler = ARGV[1]
+var evidence = ARGV[2]
+for path in "$repository" "$compiler" "$evidence" {
+  if (len(path) === 0 or path[0] !== '/') { echo 'FAIL absolute path required' >&2; exit 2 }
+}
+if test -e "$evidence" { echo 'FAIL reused native evidence' >&2; exit 2 }
+mkdir -p "$evidence/original/native" "$evidence/original/tests"
+git -C "$repository" fetch --depth 1 origin b1c19dc281e5e7d3d326c9275093fb379bafd4bd
+git -C "$repository" show b1c19dc281e5e7d3d326c9275093fb379bafd4bd:native/transport.c > "$evidence/original/native/transport.c"
+cp "$repository/tests/FramingTests.c" "$evidence/original/tests/FramingTests.c"
+"$compiler" -fno-link-libatomic -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror \
+  "$repository/tests/FramingTests.c" -lssl -lcrypto -o "$evidence/repaired"
+"$evidence/repaired" > "$evidence/repaired.txt" 2>&1
+cat "$evidence/repaired.txt"
+rg -x 'PASS 56 native framing, length, request-target and private-path checks' "$evidence/repaired.txt"
+"$compiler" -fno-link-libatomic -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror \
+  "$evidence/original/tests/FramingTests.c" -lssl -lcrypto -o "$evidence/original-candidate"
+try { "$evidence/original-candidate" > "$evidence/original.txt" 2>&1 }
+if (_error.code !== 1) { echo 'FAIL original capture traversal was not rejected' >&2; exit 1 }
+var line = $(rg -n -F 'CHECK(search_only_ancestor_case());' "$repository/tests/FramingTests.c" | cut -d : -f 1)
+rg -x -F "FAIL line $line" "$evidence/original.txt"
+sha256sum "$compiler" "$evidence/repaired" "$evidence/original-candidate" > "$evidence/sha256.txt"
+printf 'host_search_only_capture\tPASS\noriginal_transport\tREJECTED\nAndroid_runtime\tNOT_RUN\nphysical_TAB_P10\tNOT_RUN\n' > "$evidence/receipt.tsv"

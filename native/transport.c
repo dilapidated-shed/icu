@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <arpa/inet.h>
@@ -62,7 +63,16 @@ typedef struct {
  * not protect a capture from a substituted parent directory. */
 static int capture_parent(const char *path, const char **leaf) {
     if (path == NULL || path[0] != '/' || strlen(path) > 4096) return -1;
-    int directory = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    /* Android's /data ancestors permit traversal without directory listing.
+     * A path descriptor supports fstat/openat/fstatat without requiring read
+     * permission. O_DIRECTORY + O_NOFOLLOW still reject ancestor symlinks;
+     * the final owner/private-mode and exclusive leaf checks stay unchanged. */
+#if defined(__linux__) && defined(O_PATH)
+    const int directory_access = O_PATH;
+#else
+    const int directory_access = O_RDONLY;
+#endif
+    int directory = open("/", directory_access | O_DIRECTORY | O_CLOEXEC);
     if (directory < 0) return -1;
     const char *component = path + 1;
     for (;;) {
@@ -82,7 +92,7 @@ static int capture_parent(const char *path, const char **leaf) {
         memcpy(name, component, length);
         name[length] = '\0';
         int next = openat(directory, name,
-            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            directory_access | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (next < 0) break;
         close(directory);
         directory = next;
@@ -1436,7 +1446,6 @@ static int send_request(const char *host, int port, const char *request_headers,
         if (result != 0) {
             free(current_request);
             if (body_output_path == NULL && (result == 4 || result == 14) && current.use_tls) return 5;
-            if (body_output_path == NULL && result >= 11) return 7;
             return result;
         }
 
@@ -1491,7 +1500,7 @@ static int send_request(const char *host, int port, const char *request_headers,
                 complain("response body length does not match Content-Length");
                 return 9;
             }
-            if (body_output_path != NULL && (head.status < 200 || head.status >= 300)) return 10;
+            if (head.status < 200 || head.status >= 300) return 10;
             return 0;
         }
 
