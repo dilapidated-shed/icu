@@ -56,7 +56,7 @@ jobs:
         env:
           ICK: ${{ steps.ick.outputs.compiler }}
         run: |
-          .tools/runtime/.build/grease/bin/grease -c 'sudo apt-get install -y libssl-dev'
+          .tools/runtime/.build/grease/bin/grease -c 'sudo apt-get install -y ripgrep libssl-dev'
           .tools/runtime/.build/grease/bin/grease tests/verify-search-path.grease "$GITHUB_WORKSPACE" "$ICK" "$RUNNER_TEMP/icu-search-path"
       - name: Bootstrap maintained Idriç and install network types
         env:

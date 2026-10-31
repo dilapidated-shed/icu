@@ -55,6 +55,7 @@ static int search_only_ancestor_case(void) {
         ok = chown(ancestor, test_uid, test_gid) == 0 &&
              chown(private_directory, test_uid, test_gid) == 0;
     if (ok) ok = chmod(ancestor, 0111) == 0;
+    if (!ok) perror("search-only fixture setup");
     pid_t child = ok ? fork() : -1;
     if (child == 0) {
         if (geteuid() == 0 && (setgid(test_gid) != 0 || setuid(test_uid) != 0)) _exit(2);
@@ -69,8 +70,14 @@ static int search_only_ancestor_case(void) {
         _exit(0);
     }
     int status = 0;
-    ok = child > 0 && waitpid(child, &status, 0) == child &&
-         WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    int waited = child > 0 && waitpid(child, &status, 0) == child;
+    ok = waited && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (!ok) {
+        if (!waited) perror("search-only fixture child");
+        else if (WIFEXITED(status))
+            fprintf(stderr, "search-only fixture child exit %d\n", WEXITSTATUS(status));
+        else fprintf(stderr, "search-only fixture child status %d\n", status);
+    }
     if (chmod(ancestor, 0700) != 0) ok = 0;
     if (unlink(body) != 0 && errno != ENOENT) ok = 0;
     if (rmdir(private_directory) != 0 || rmdir(ancestor) != 0) ok = 0;
