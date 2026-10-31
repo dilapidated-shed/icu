@@ -136,7 +136,15 @@ The existing binary-safe transport captures at most 8 MiB, refuses unsupported
 framing and truncated declared lengths, and creates mode-0600 files without
 following an existing output symlink. A nonzero exit never authorizes these bytes
 as a resource. The metadata includes `http_status`, `content_type`,
-`content_encoding`, `received_length`, `utf8`, `resolved_url` and `redirect_count`.
+`content_encoding`, `received_length`, `utf8`, `resolved_url`, `redirect_count`
+and `redirect_chain`. The bounded ASCII `R1` chain starts with the selected
+initial endpoint as `<byte-length> <URL>`, then appends
+`<redirect-status> <byte-length> <URL>` for each actually followed hop. Lengths
+frame URL punctuation without inventing a URL delimiter. The initial/final
+endpoints come from the transport owner; the caller retains its exact original
+request separately. Total metadata remains bounded to 8192 bytes. An excessive
+observation refuses capture rather than omitting provenance. Ordinary stdout
+requests without capture retain their existing behavior.
 The final URL reflects ICU's actual followed endpoint, not displayed HTML.
 
 This is a trusted process boundary, not a renderer API. A browser must own and

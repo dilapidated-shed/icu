@@ -29,6 +29,7 @@
 #define MAX_TARGET_BYTES (16u * 1024u)
 #define MAX_REDIRECTS 8
 #define MAX_CAPTURE_BYTES (8u * 1024u * 1024u)
+#define MAX_OBSERVATION_BYTES 8192u
 
 const char *icu_response_directory(void) {
     static char path[4096];
@@ -997,7 +998,8 @@ static int endpoint_url(const endpoint *final, char *output, size_t capacity) {
 
 static int write_response_metadata(const char *path, const response_head *head,
                                    size_t received_length, const char *body_path,
-                                   const endpoint *final, int redirect_count) {
+                                   const endpoint *final, int redirect_count,
+                                   const char *redirect_chain) {
     if (path == NULL) return 1;
     char resolved_url[MAX_TARGET_BYTES + MAX_HOST_BYTES + 64u];
     if (!endpoint_url(final, resolved_url, sizeof(resolved_url))) return 0;
@@ -1013,7 +1015,8 @@ static int write_response_metadata(const char *path, const response_head *head,
         "transfer_decoding\t%s\n"
         "utf8\t%s\n"
         "resolved_url\t%s\n"
-        "redirect_count\t%d\n",
+        "redirect_count\t%d\n"
+        "redirect_chain\t%s\n",
         head->status,
         head->content_type[0] == '\0' ? "unknown" : head->content_type,
         head->content_encoding[0] == '\0' ? "identity" : head->content_encoding,
@@ -1023,9 +1026,36 @@ static int write_response_metadata(const char *path, const response_head *head,
         head->transfer_encoding_kind == 1 ? "chunked" : "identity",
         valid_utf8_file(body_path) == 1 ? "valid" : "invalid",
         resolved_url,
-        redirect_count) > 0;
+        redirect_count,
+        redirect_chain) > 0;
+    long observation_bytes = ftell(file);
+    if (observation_bytes < 0 || (unsigned long)observation_bytes > MAX_OBSERVATION_BYTES)
+        ok = 0;
     if (fclose(file) != 0) ok = 0;
     return ok;
+}
+
+/* R1 is length-framed ASCII: initial URL, then each actually followed
+ * status/target. URL bytes can contain punctuation, so they are never split
+ * on an invented delimiter. The count is independently retained metadata.
+ * Every URL comes from the endpoint selected by this response owner. */
+static int begin_redirect_observations(const endpoint *initial,
+                                       char output[MAX_OBSERVATION_BYTES + 1u]) {
+    char url[MAX_TARGET_BYTES + MAX_HOST_BYTES + 64u];
+    if (!endpoint_url(initial, url, sizeof(url))) return 0;
+    int written = snprintf(output, MAX_OBSERVATION_BYTES + 1u,
+                           "R1 %zu %s", strlen(url), url);
+    return written > 0 && (size_t)written <= MAX_OBSERVATION_BYTES;
+}
+
+static int append_redirect_observation(char output[MAX_OBSERVATION_BYTES + 1u],
+                                       int status, const endpoint *next) {
+    char url[MAX_TARGET_BYTES + MAX_HOST_BYTES + 64u];
+    if (!endpoint_url(next, url, sizeof(url))) return 0;
+    size_t used = strlen(output);
+    int written = snprintf(output + used, MAX_OBSERVATION_BYTES + 1u - used,
+                           "%d %zu %s", status, strlen(url), url);
+    return written > 0 && (size_t)written <= MAX_OBSERVATION_BYTES - used;
 }
 
 static int redirect_status(int status) {
@@ -1435,6 +1465,13 @@ static int send_request(const char *host, int port, const char *request_headers,
     }
 
     size_t request_bytes = (size_t)request_body_length;
+    char redirect_chain[MAX_OBSERVATION_BYTES + 1u] = {0};
+    if (metadata_output_path != NULL &&
+        !begin_redirect_observations(&current, redirect_chain)) {
+        free(current_request);
+        complain("initial response observations exceed their bound");
+        return 12;
+    }
     for (int redirects = 0; ; ++redirects) {
         response_head head;
         char body_prefix[16384];
@@ -1490,7 +1527,8 @@ static int send_request(const char *host, int port, const char *request_headers,
             if (body_output_path != NULL && fclose(output) != 0) copied = 0;
             int metadata_written = copied && write_response_metadata(metadata_output_path, &head,
                                                            received_length, body_output_path,
-                                                           &current, redirects);
+                                                           &current, redirects,
+                                                           redirect_chain);
             close_connection(&opened);
             free(current_request);
             if (!copied || !metadata_written) return !copied &&
@@ -1527,6 +1565,15 @@ static int send_request(const char *host, int port, const char *request_headers,
             free(current_request);
             complain("could not construct redirected GET request");
             return 8;
+        }
+
+        if (metadata_output_path != NULL &&
+            !append_redirect_observation(redirect_chain, head.status, &next)) {
+            close_connection(&opened);
+            free(current_request);
+            free(next_request);
+            complain("redirect observations exceed their bound");
+            return 12;
         }
 
         close_connection(&opened);

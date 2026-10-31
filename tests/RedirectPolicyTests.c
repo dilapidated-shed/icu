@@ -146,7 +146,29 @@ static endpoint test_endpoint(int use_tls, int port, const char *host, const cha
     return value;
 }
 
+static int test_redirect_observations(void) {
+    endpoint first = test_endpoint(1, 443, "example.com", "/");
+    endpoint next = test_endpoint(0, 80, "example.org", "/next?x=302;end");
+    char observations[MAX_OBSERVATION_BYTES + 1u];
+    if (!begin_redirect_observations(&first, observations) ||
+        strcmp(observations, "R1 20 https://example.com/") != 0 ||
+        !append_redirect_observation(observations, 302, &next) ||
+        strcmp(observations, "R1 20 https://example.com/302 33 http://example.org/next?x=302;end") != 0)
+        return 0;
+    /* Refuse excessive provenance rather than silently retaining a prefix. */
+    memset(next.target, 'a', sizeof(next.target)-1U);
+    next.target[0] = '/';
+    next.target[sizeof(next.target)-1U] = '\0';
+    if (append_redirect_observation(observations, 307, &next) ||
+        begin_redirect_observations(&next, observations)) return 0;
+    return 1;
+}
+
 int main(void) {
+    if (!test_redirect_observations()) {
+        fputs("ordered bounded redirect observations failed\n", stderr);
+        return 1;
+    }
     if (!test_chunked_framing()) {
         fputs("bounded chunked response framing failed\n", stderr);
         return 1;
@@ -216,5 +238,6 @@ int main(void) {
     free(cross_request);
 
     puts("PASS configured HTTPS proxy, CONNECT framing and redirect credentials");
+    puts("PASS ordered response-owner redirect observations and excessive-chain refusal");
     return 0;
 }

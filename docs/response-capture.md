@@ -37,6 +37,16 @@ for the stdout command. POST metadata retains its actual request target.
 Unexpected content encodings fail without a hidden decoder or runtime fallback.
 GET/POST support HTTP/1.0 and HTTP/1.1, identity encoding and Connection: close.
 
+Private captures also retain an ordered `redirect_chain`. Its ASCII `R1`
+wire begins with the actually selected initial endpoint as `<byte-length> <URL>`
+and appends `<status> <byte-length> <URL>` for each followed redirect. URL
+punctuation is data, not a separator. The redirect count and resolved final URL
+remain independent fields. The total metadata bound is 8192 bytes; a capture
+whose observations exceed it fails rather than reporting incomplete provenance.
+The caller retains the exact requested URL separately, including any spelling
+that projects to the selected default path/port. This metadata does not grant
+application admission or attest a Binder transaction.
+
 Socket connection, reads and writes have 15-second bounds. DNS resolution uses
 the host resolver and has no ICU-specific deadline yet. This remaining limit
 does not make a DNS failure a successful empty response. TLS still verifies
