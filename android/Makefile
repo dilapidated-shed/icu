@@ -27,7 +27,8 @@ preflight:
 $(WORK)/openssl/configdata.pm: | preflight
 	mkdir -p "$(WORK)"
 	test ! -e "$(WORK)/openssl"
-	cp -a "$(OPENSSL_SOURCE)" "$(WORK)/openssl"
+	mkdir "$(WORK)/openssl"
+	git -C "$(OPENSSL_SOURCE)" archive "$(OPENSSL_REF)" | tar -xf - -C "$(WORK)/openssl"
 	cd "$(WORK)/openssl" && env ANDROID_NDK_ROOT="$(ANDROID_NDK_HOME)" PATH="$(NDK_BIN):$$PATH" ./Configure "$(OPENSSL_TARGET_$(ANDROID_ABI))" -D__ANDROID_API__=$(ANDROID_API) no-shared no-pinshared no-tests no-apps no-module
 
 $(WORK)/openssl/libssl.a: $(WORK)/openssl/configdata.pm
