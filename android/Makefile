@@ -31,11 +31,11 @@ $(WORK)/openssl/configdata.pm: | preflight
 	cd "$(WORK)/openssl" && env ANDROID_NDK_ROOT="$(ANDROID_NDK_HOME)" PATH="$(NDK_BIN):$$PATH" ./Configure "$(OPENSSL_TARGET_$(ANDROID_ABI))" -D__ANDROID_API__=$(ANDROID_API) no-shared no-pinshared no-tests no-apps no-module
 
 $(WORK)/openssl/libssl.a: $(WORK)/openssl/configdata.pm
-	$(MAKE) -C "$(WORK)/openssl" -j2 build_libs > "$(WORK)/openssl-build.log" 2>&1
+	env PATH="$(NDK_BIN):$$PATH" $(MAKE) -C "$(WORK)/openssl" -j2 build_libs > "$(WORK)/openssl-build.log" 2>&1
 
 $(OUTPUT): $(WORK)/openssl/libssl.a $(ROOT)/native/transport.c $(ROOT)/android/jni_transport.c | preflight
 	mkdir -p "$(dir $(OUTPUT))"
-	"$(COMPILER)" -std=c11 -O2 -fPIC -Wall -Wextra -Wpedantic -Werror -I"$(WORK)/openssl/include" -shared -Wl,--no-undefined -Wl,--exclude-libs,ALL -Wl,-soname,libicu_transport.so "$(ROOT)/native/transport.c" "$(ROOT)/android/jni_transport.c" "$(WORK)/openssl/libssl.a" "$(WORK)/openssl/libcrypto.a" -ldl -pthread $(EXTRA_$(ANDROID_ABI)) -o "$@"
+	"$(COMPILER)" -std=c11 -O2 -fPIC -Wall -Wextra -Wpedantic -Werror -I"$(WORK)/openssl/include" -shared -Wl,--no-undefined -Wl,--exclude-libs,ALL -Wl,-z,max-page-size=16384 -Wl,-soname,libicu_transport.so "$(ROOT)/native/transport.c" "$(ROOT)/android/jni_transport.c" "$(WORK)/openssl/libssl.a" "$(WORK)/openssl/libcrypto.a" -ldl -pthread $(EXTRA_$(ANDROID_ABI)) -o "$@"
 
 symbols: $(OUTPUT)
 	"$(READELF)" -Ws "$(OUTPUT)" > "$(WORK)/symbols.txt"
