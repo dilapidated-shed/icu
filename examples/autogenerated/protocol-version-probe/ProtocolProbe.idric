@@ -1,0 +1,89 @@
+module ProtocolProbe
+
+import Data.Text
+import Data.List
+import Data.List1
+import Network.HTTP
+import Network.Types
+import Network.URL
+import Response
+import System
+import System.File
+
+%default covering
+
+number : Text → Maybe ℕ
+number text = if length text > 0 && all isDigit (unpack text)
+  then Just (cast text) else Nothing
+
+fields : Text → List (Text, Text)
+fields text = mapMaybe row (lines text)
+  where
+    row : Text → Maybe (Text, Text)
+    row line = case forget (split (≟ '\t') line) of
+      [key, value] ⇒ Just (key, value)
+      _ ⇒ Nothing
+
+verified_range : ℕ → ℕ → Text → Bool
+verified_range start size metadata =
+  let values = fields metadata in
+    lookup "http_status" values ≟ Just "206" &&
+    lookup "content_encoding" values ≟ Just "identity" &&
+    lookup "received_length" values ≟ Just (show size) &&
+    lookup "declared_length" values ≟ Just (show size) &&
+    case lookup "content_range" values of
+      Just value ⇒ range_matches start size value
+      Nothing ⇒ False
+
+%foreign "C:icu_fetch_https_with_credentials,libicu_transport"
+native_https : Text → Int → Text → Text → Int → Text → Text → Text → PrimIO Int
+
+run : Text → Text → Text → List request_header → Maybe (ℕ, ℕ) → IO ()
+run address body_path metadata_path headers requested_range = case parse_url address of
+  Left problem ⇒ do
+    putStrLn problem
+    exitFailure
+  Right destination ⇒ case destination of
+    http_url _ _ _ ⇒ do
+      putStrLn "diagnostic requires HTTPS"
+      exitFailure
+    https_url name port _ ⇒ do
+      case render_request_parts_at_version http_one_one (get destination) headers of
+        Left problem ⇒ do
+          putStrLn problem
+          exitFailure
+        Right rendered ⇒ do
+          result ← primIO (native_https (host_name_string name)
+            (cast (destination_port_number port))
+            (http_request_head_text (rendered_request_head rendered)) "" 0 body_path metadata_path "")
+          putStrLn ("native_result\t" ++ show result)
+          if not (result ≟ 0 || result ≟ 10) then exitFailure else pure ()
+          metadata ← readFile metadata_path
+          case metadata of
+            Left _ ⇒ exitFailure
+            Right text ⇒ do
+              putStrLn text
+              case requested_range of
+                Nothing ⇒ pure ()
+                Just (start, size) ⇒ if verified_range start size text
+                  then putStrLn "range_validation\tPASS"
+                  else do
+                    putStrLn "range_validation\tFAIL"
+                    exitFailure
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case drop 1 arguments of
+    [address, body_path, metadata_path] ⇒ run address body_path metadata_path [] Nothing
+    [address, body_path, metadata_path, start_text, size_text] ⇒
+      case (number start_text, number size_text) of
+        (Just start, Just size) ⇒ if size > 0 && size <= 8388608 then
+          case make_header "Range" ("bytes=" ++ show start ++ "-" ++ show (minus (start + size) 1)) of
+            Left _ ⇒ exitFailure
+            Right range_header ⇒ run address body_path metadata_path [range_header] (Just (start, size))
+          else exitFailure
+        _ ⇒ exitFailure
+    _ ⇒ do
+      putStrLn "requires URL BODY_OUTPUT METADATA_OUTPUT [OFFSET LENGTH]"
+      exitFailure

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <arpa/inet.h>
@@ -13,8 +14,14 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <dirent.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
+#endif
 
 #define MAX_HEADER_BYTES (64u * 1024u)
 #define MAX_LOCATION_BYTES 4096u
@@ -22,10 +29,14 @@
 #define MAX_TARGET_BYTES (16u * 1024u)
 #define MAX_REDIRECTS 8
 #define MAX_CAPTURE_BYTES (8u * 1024u * 1024u)
+#define MAX_OBSERVATION_BYTES 8192u
 
 const char *icu_response_directory(void) {
-    static char path[64];
-    strcpy(path, "/tmp/icu-response-XXXXXX");
+    static char path[4096];
+    const char *temporary = getenv("TMPDIR");
+    int written = snprintf(path, sizeof(path), "%s/icu-response-XXXXXX",
+                           temporary == NULL ? "/tmp" : temporary);
+    if (written < 0 || (size_t)written >= sizeof(path)) return "";
     return mkdtemp(path) == NULL ? "" : path;
 }
 
@@ -43,12 +54,84 @@ typedef struct {
     long long content_length;
     char content_type[256];
     char content_encoding[64];
+    char content_range[128];
     int invalid_framing;
+    int transfer_encoding_kind; /* 0 absent, 1 single chunked, 2 unsupported/ambiguous */
 } response_head;
+
+/* Walk every directory without following symlinks. The final directory must
+ * belong to this process and be private; O_NOFOLLOW on the leaf alone does
+ * not protect a capture from a substituted parent directory. */
+static int capture_parent(const char *path, const char **leaf) {
+    if (path == NULL || path[0] != '/' || strlen(path) > 4096) return -1;
+    /* Android's /data ancestors permit traversal without directory listing.
+     * A path descriptor supports fstat/openat/fstatat without requiring read
+     * permission. O_DIRECTORY + O_NOFOLLOW still reject ancestor symlinks;
+     * the final owner/private-mode and exclusive leaf checks stay unchanged. */
+#if defined(__linux__) && defined(O_PATH)
+    const int directory_access = O_PATH;
+#else
+    const int directory_access = O_RDONLY;
+#endif
+    int directory = open("/", directory_access | O_DIRECTORY | O_CLOEXEC);
+    if (directory < 0) return -1;
+    const char *component = path + 1;
+    for (;;) {
+        const char *slash = strchr(component, '/');
+        size_t length = slash == NULL ? strlen(component) : (size_t)(slash - component);
+        if (length == 0 || length > NAME_MAX ||
+            (length == 1 && component[0] == '.') ||
+            (length == 2 && component[0] == '.' && component[1] == '.')) break;
+        if (slash == NULL) {
+            struct stat state;
+            if (fstat(directory, &state) != 0 || state.st_uid != geteuid() ||
+                (state.st_mode & 0077) != 0) break;
+            *leaf = component;
+            return directory;
+        }
+        char name[NAME_MAX + 1];
+        memcpy(name, component, length);
+        name[length] = '\0';
+        int next = openat(directory, name,
+            directory_access | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0) break;
+        close(directory);
+        directory = next;
+        component = slash + 1;
+    }
+    close(directory);
+    return -1;
+}
+
+static int capture_paths_valid(const char *body, const char *metadata) {
+    if (body == NULL && metadata == NULL) return 1;
+    if (body == NULL || metadata == NULL) return 0;
+    const char *body_leaf = NULL, *metadata_leaf = NULL;
+    int body_parent = capture_parent(body, &body_leaf);
+    int metadata_parent = capture_parent(metadata, &metadata_leaf);
+    int valid = 0;
+    if (body_parent >= 0 && metadata_parent >= 0) {
+        struct stat first, second, existing;
+        valid = fstat(body_parent, &first) == 0 && fstat(metadata_parent, &second) == 0 &&
+            !(first.st_dev == second.st_dev && first.st_ino == second.st_ino &&
+              strcmp(body_leaf, metadata_leaf) == 0);
+        if (valid && (fstatat(body_parent, body_leaf, &existing, AT_SYMLINK_NOFOLLOW) == 0 ||
+                      errno != ENOENT)) valid = 0;
+        if (valid && (fstatat(metadata_parent, metadata_leaf, &existing, AT_SYMLINK_NOFOLLOW) == 0 ||
+                      errno != ENOENT)) valid = 0;
+    }
+    if (body_parent >= 0) close(body_parent);
+    if (metadata_parent >= 0) close(metadata_parent);
+    return valid;
+}
 
 /* Captures are private even when the caller's umask is permissive. */
 static FILE *private_output(const char *path, const char *mode) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    const char *leaf = NULL;
+    int parent = capture_parent(path, &leaf);
+    if (parent < 0) return NULL;
+    int fd = openat(parent, leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    close(parent);
     if (fd < 0) return NULL;
     FILE *file = fdopen(fd, mode);
     if (file == NULL) close(fd);
@@ -279,6 +362,42 @@ static void close_connection(connection *connection) {
     connection->tls = NULL;
 }
 
+static int load_tls_trust(SSL_CTX *context) {
+#ifdef __ANDROID__
+    /* Android certificate filenames use the platform's hash convention.
+     * Read the PEM roots rather than assuming OpenSSL's CApath hash.
+     * Explicit test/operator trust settings retain their existing meaning. */
+    if (getenv("SSL_CERT_FILE") == NULL && getenv("SSL_CERT_DIR") == NULL) {
+        const char *stores[] = {"/apex/com.android.conscrypt/cacerts",
+                                "/system/etc/security/cacerts"};
+        for (size_t index = 0; index < sizeof(stores) / sizeof(stores[0]); ++index) {
+            DIR *directory = opendir(stores[index]);
+            if (directory == NULL) continue;
+            int loaded = 0;
+            struct dirent *entry;
+            while ((entry = readdir(directory)) != NULL) {
+                if (entry->d_name[0] == '.' || strchr(entry->d_name, '/') != NULL) continue;
+                char path[4096];
+                int count = snprintf(path, sizeof(path), "%s/%s", stores[index], entry->d_name);
+                if (count < 0 || (size_t)count >= sizeof(path)) continue;
+                BIO *input = BIO_new_file(path, "r");
+                if (input == NULL) continue;
+                X509 *certificate = PEM_read_bio_X509(input, NULL, NULL, NULL);
+                BIO_free(input);
+                if (certificate == NULL) continue;
+                if (X509_STORE_add_cert(SSL_CTX_get_cert_store(context), certificate) == 1) ++loaded;
+                X509_free(certificate);
+            }
+            closedir(directory);
+            ERR_clear_error();
+            if (loaded > 0) return 1;
+        }
+        return 0;
+    }
+#endif
+    return SSL_CTX_set_default_verify_paths(context);
+}
+
 static int open_connection(const char *host, int port, int use_tls, connection *result) {
     result->failure_code = 4;
     result->socket_fd = -1;
@@ -314,7 +433,7 @@ static int open_connection(const char *host, int port, int use_tls, connection *
     result->failure_code = 5;
 
     result->tls_context = SSL_CTX_new(TLS_client_method());
-    if (result->tls_context == NULL || SSL_CTX_set_default_verify_paths(result->tls_context) != 1) {
+    if (result->tls_context == NULL || load_tls_trust(result->tls_context) != 1) {
         complain("could not initialize TLS trust");
         close_connection(result);
         return 0;
@@ -450,6 +569,30 @@ static int parse_status(const char *headers, size_t length) {
     return (space[1] - '0') * 100 + (space[2] - '0') * 10 + (space[3] - '0');
 }
 
+static int valid_response_headers(const char *headers, size_t length) {
+    const char *end = headers + length;
+    const char *line = headers;
+    int first = 1;
+    while (line < end) {
+        const char *newline = memchr(line, '\n', (size_t)(end - line));
+        if (newline == NULL || newline == line || newline[-1] != '\r') return 0;
+        const char *stop = newline - 1;
+        if (stop == line) return newline + 1 == end;
+        const char *colon = first ? NULL : memchr(line, ':', (size_t)(stop - line));
+        if (!first && (colon == NULL || colon == line)) return 0;
+        for (const char *cursor = line; cursor < stop; ++cursor) {
+            unsigned char byte = (unsigned char)*cursor;
+            if ((byte < 32 && !(byte == '\t' && colon != NULL && cursor > colon)) ||
+                byte == 127) return 0;
+            if (colon != NULL && cursor < colon &&
+                !(isalnum(byte) || strchr("!#$%&'*+-.^_`|~", byte) != NULL)) return 0;
+        }
+        first = 0;
+        line = newline + 1;
+    }
+    return 0;
+}
+
 static int copy_header_value(const char *headers, size_t header_length,
                              const char *wanted, char *output, size_t output_capacity) {
     size_t wanted_length = strlen(wanted);
@@ -491,6 +634,10 @@ static int copy_header_value(const char *headers, size_t header_length,
                 return 0;
             }
             memcpy(output, value, value_length);
+            /* Preserve HTTP optional whitespace without injecting TSV columns
+             * into response metadata. CR/LF and other controls were refused. */
+            for (size_t index = 0; index < value_length; ++index)
+                if (output[index] == '\t') output[index] = ' ';
             output[value_length] = '\0';
             return 1;
         }
@@ -539,7 +686,9 @@ static int read_response_head(connection *connection, response_head *head,
     connection->failure_code = 13;
 
     while (header_bytes < MAX_HEADER_BYTES) {
-        ssize_t amount = read_some(connection, buffer, sizeof(buffer));
+        size_t available = MAX_HEADER_BYTES - header_bytes;
+        ssize_t amount = read_some(connection, buffer,
+            available < sizeof(buffer) ? available : sizeof(buffer));
         if (amount <= 0) {
             complain(amount == 0 ? "response ended before its headers" : "response read failed");
             return 0;
@@ -557,6 +706,10 @@ static int read_response_head(connection *connection, response_head *head,
         char *body = find_header_end(headers, header_bytes);
         if (body != NULL) {
             size_t head_length = (size_t)(body - headers);
+            if (!valid_response_headers(headers, head_length)) {
+                complain("malformed HTTP header syntax");
+                return 0;
+            }
             head->status = parse_status(headers, head_length);
             if (head->status < 100 || head->status > 599) {
                 complain("invalid HTTP status line");
@@ -570,9 +723,15 @@ static int read_response_head(connection *connection, response_head *head,
                 head->content_length = parse_content_length(length_text);
             }
             int lengths = header_count(headers, head_length, "Content-Length");
+            int transfers = header_count(headers, head_length, "Transfer-Encoding");
+            char transfer[64];
+            int transfer_copied = copy_header_value(headers, head_length,
+                "Transfer-Encoding", transfer, sizeof(transfer));
+            head->transfer_encoding_kind = transfers == 0 ? 0 :
+                transfers == 1 && transfer_copied && strcasecmp(transfer, "chunked") == 0 ? 1 : 2;
             head->invalid_framing = lengths > 1 ||
                 (lengths == 1 && head->content_length < 0) ||
-                header_count(headers, head_length, "Transfer-Encoding") != 0;
+                head->transfer_encoding_kind == 2 || (transfers != 0 && lengths != 0);
             (void)copy_header_value(headers, head_length, "Content-Type",
                                     head->content_type, sizeof(head->content_type));
             int encoding_copied = copy_header_value(headers, head_length, "Content-Encoding",
@@ -580,6 +739,13 @@ static int read_response_head(connection *connection, response_head *head,
             int encodings = header_count(headers, head_length, "Content-Encoding");
             if (encodings > 1 || (encodings == 1 && !encoding_copied))
                 strcpy(head->content_encoding, "unsupported");
+            int ranges = header_count(headers, head_length, "Content-Range");
+            int range_copied = copy_header_value(headers, head_length, "Content-Range",
+                                    head->content_range, sizeof(head->content_range));
+            if (ranges > 1 || (ranges == 1 && !range_copied)) head->invalid_framing = 1;
+            if (header_count(headers, head_length, "Location") > 1 ||
+                header_count(headers, head_length, "Content-Type") > 1)
+                head->invalid_framing = 1;
 
             size_t available_body = header_bytes - head_length;
             if (available_body > body_capacity) {
@@ -600,9 +766,13 @@ static int read_response_head(connection *connection, response_head *head,
 
 static int copy_remaining_body(connection *connection, FILE *output,
                                const char *prefix, size_t prefix_length,
-                               size_t *received_length) {
+                               size_t *received_length, long long declared_length) {
     char buffer[16384];
     *received_length = 0;
+    if (declared_length >= 0 && (unsigned long long)prefix_length > (unsigned long long)declared_length) {
+        connection->failure_code = 9;
+        return 0;
+    }
     if (output != stdout && prefix_length > MAX_CAPTURE_BYTES) {
         connection->failure_code = 12;
         return 0;
@@ -615,7 +785,17 @@ static int copy_remaining_body(connection *connection, FILE *output,
     for (;;) {
         ssize_t amount = read_some(connection, buffer, sizeof(buffer));
         if (amount == 0) {
+            if (declared_length >= 0 && (unsigned long long)*received_length != (unsigned long long)declared_length) {
+                complain("response body length does not match Content-Length");
+                connection->failure_code = 9;
+                return 0;
+            }
             return fflush(output) == 0;
+        }
+        if (amount > 0 && declared_length >= 0 &&
+            (unsigned long long)amount > (unsigned long long)declared_length - *received_length) {
+            connection->failure_code = 9;
+            return 0;
         }
         if (output != stdout && amount > 0 &&
             (size_t)amount > MAX_CAPTURE_BYTES - *received_length) {
@@ -629,6 +809,87 @@ static int copy_remaining_body(connection *connection, FILE *output,
         }
         *received_length += (size_t)amount;
     }
+}
+
+typedef struct {
+    connection *opened;
+    const unsigned char *prefix;
+    size_t prefix_length, prefix_position;
+    unsigned char buffer[16384];
+    size_t position, length;
+} chunk_reader;
+
+static int chunk_byte(chunk_reader *reader, unsigned char *byte) {
+    if (reader->prefix_position < reader->prefix_length) {
+        *byte = reader->prefix[reader->prefix_position++];
+        return 1;
+    }
+    if (reader->position == reader->length) {
+        ssize_t amount = read_some(reader->opened, (char *)reader->buffer, sizeof(reader->buffer));
+        if (amount <= 0) return (int)amount;
+        reader->position = 0;
+        reader->length = (size_t)amount;
+    }
+    *byte = reader->buffer[reader->position++];
+    return 1;
+}
+
+static int chunk_crlf(chunk_reader *reader) {
+    unsigned char first = 0, second = 0;
+    return chunk_byte(reader, &first) == 1 && first == '\r' &&
+           chunk_byte(reader, &second) == 1 && second == '\n';
+}
+
+/* Bounded RFC 9112 section 7.1 subset. Extensions and trailers are explicitly
+ * unsupported; they never become entity bytes. Connection: close is requested. */
+static int copy_chunked_body(connection *opened, FILE *output,
+                             const char *prefix, size_t prefix_length,
+                             size_t *received_length) {
+    chunk_reader reader = {0};
+    reader.opened = opened;
+    reader.prefix = (const unsigned char *)prefix;
+    reader.prefix_length = prefix_length;
+    *received_length = 0;
+    opened->failure_code = 13;
+    for (size_t chunks = 0; chunks < 65536; ++chunks) {
+        size_t chunk_length = 0, digits = 0;
+        unsigned char byte = 0;
+        for (;;) {
+            if (chunk_byte(&reader, &byte) != 1) return 0;
+            if (byte == '\r') {
+                if (digits == 0 || chunk_byte(&reader, &byte) != 1 || byte != '\n') return 0;
+                break;
+            }
+            unsigned int digit;
+            if (byte >= '0' && byte <= '9') digit = byte - '0';
+            else if (byte >= 'a' && byte <= 'f') digit = byte - 'a' + 10u;
+            else if (byte >= 'A' && byte <= 'F') digit = byte - 'A' + 10u;
+            else return 0;
+            if (++digits > 128) return 0;
+            if (chunk_length > (MAX_CAPTURE_BYTES - digit) / 16u) {
+                opened->failure_code = 12;
+                return 0;
+            }
+            chunk_length = chunk_length * 16u + digit;
+        }
+        if (chunk_length == 0) {
+            if (!chunk_crlf(&reader)) return 0;
+            int ended = chunk_byte(&reader, &byte);
+            if (ended != 0) return 0;
+            return fflush(output) == 0;
+        }
+        if (chunk_length > MAX_CAPTURE_BYTES - *received_length) {
+            opened->failure_code = 12;
+            return 0;
+        }
+        for (size_t index = 0; index < chunk_length; ++index) {
+            if (chunk_byte(&reader, &byte) != 1 || fputc(byte, output) == EOF) return 0;
+        }
+        *received_length += chunk_length;
+        if (!chunk_crlf(&reader)) return 0;
+    }
+    opened->failure_code = 12;
+    return 0;
 }
 
 static int continuation(unsigned char byte) {
@@ -713,26 +974,88 @@ static int valid_utf8_file(const char *path) {
     return valid;
 }
 
+/* Metadata is a separate, bounded file. Reconstruct the effective URL from
+ * the socket target selected by ICU, never from the caller's original string. */
+static int endpoint_url(const endpoint *final, char *output, size_t capacity) {
+    const int default_port = final->use_tls ? 443 : 80;
+    int written;
+    if (final->port == default_port) {
+        written = snprintf(output, capacity, "%s://%s%s",
+                           final->use_tls ? "https" : "http",
+                           final->host, final->target);
+    } else {
+        written = snprintf(output, capacity, "%s://%s:%d%s",
+                           final->use_tls ? "https" : "http",
+                           final->host, final->port, final->target);
+    }
+    if (written < 0 || (size_t)written >= capacity) return 0;
+    for (size_t position = 0; position < (size_t)written; ++position) {
+        unsigned char octet = (unsigned char)output[position];
+        if (octet <= 32 || octet >= 127) return 0;
+    }
+    return 1;
+}
+
 static int write_response_metadata(const char *path, const response_head *head,
-                                   size_t received_length, const char *body_path) {
+                                   size_t received_length, const char *body_path,
+                                   const endpoint *final, int redirect_count,
+                                   const char *redirect_chain) {
     if (path == NULL) return 1;
+    char resolved_url[MAX_TARGET_BYTES + MAX_HOST_BYTES + 64u];
+    if (!endpoint_url(final, resolved_url, sizeof(resolved_url))) return 0;
     FILE *file = private_output(path, "w");
     if (file == NULL) return 0;
     int ok = fprintf(file,
         "http_status\t%d\n"
         "content_type\t%s\n"
         "content_encoding\t%s\n"
+        "content_range\t%s\n"
         "declared_length\t%lld\n"
         "received_length\t%zu\n"
-        "utf8\t%s\n",
+        "transfer_decoding\t%s\n"
+        "utf8\t%s\n"
+        "resolved_url\t%s\n"
+        "redirect_count\t%d\n"
+        "redirect_chain\t%s\n",
         head->status,
         head->content_type[0] == '\0' ? "unknown" : head->content_type,
         head->content_encoding[0] == '\0' ? "identity" : head->content_encoding,
+        head->content_range[0] == '\0' ? "absent" : head->content_range,
         head->content_length,
         received_length,
-        valid_utf8_file(body_path) == 1 ? "valid" : "invalid") > 0;
+        head->transfer_encoding_kind == 1 ? "chunked" : "identity",
+        valid_utf8_file(body_path) == 1 ? "valid" : "invalid",
+        resolved_url,
+        redirect_count,
+        redirect_chain) > 0;
+    long observation_bytes = ftell(file);
+    if (observation_bytes < 0 || (unsigned long)observation_bytes > MAX_OBSERVATION_BYTES)
+        ok = 0;
     if (fclose(file) != 0) ok = 0;
     return ok;
+}
+
+/* R1 is length-framed ASCII: initial URL, then each actually followed
+ * status/target. URL bytes can contain punctuation, so they are never split
+ * on an invented delimiter. The count is independently retained metadata.
+ * Every URL comes from the endpoint selected by this response owner. */
+static int begin_redirect_observations(const endpoint *initial,
+                                       char output[MAX_OBSERVATION_BYTES + 1u]) {
+    char url[MAX_TARGET_BYTES + MAX_HOST_BYTES + 64u];
+    if (!endpoint_url(initial, url, sizeof(url))) return 0;
+    int written = snprintf(output, MAX_OBSERVATION_BYTES + 1u,
+                           "R1 %zu %s", strlen(url), url);
+    return written > 0 && (size_t)written <= MAX_OBSERVATION_BYTES;
+}
+
+static int append_redirect_observation(char output[MAX_OBSERVATION_BYTES + 1u],
+                                       int status, const endpoint *next) {
+    char url[MAX_TARGET_BYTES + MAX_HOST_BYTES + 64u];
+    if (!endpoint_url(next, url, sizeof(url))) return 0;
+    size_t used = strlen(output);
+    int written = snprintf(output + used, MAX_OBSERVATION_BYTES + 1u - used,
+                           "%d %zu %s", status, strlen(url), url);
+    return written > 0 && (size_t)written <= MAX_OBSERVATION_BYTES - used;
 }
 
 static int redirect_status(int status) {
@@ -855,10 +1178,10 @@ static int parse_absolute_location(const char *location, int default_tls, endpoi
 }
 
 static int request_target(const char *request, char *output, size_t capacity) {
-    if (strncmp(request, "GET ", 4) != 0) {
-        return 0;
-    }
-    const char *start = request + 4;
+    size_t method_length = strncmp(request, "GET ", 4) == 0 ? 4u :
+                           strncmp(request, "POST ", 5) == 0 ? 5u : 0u;
+    if (method_length == 0) return 0;
+    const char *start = request + method_length;
     const char *space = strchr(start, ' ');
     if (space == NULL) {
         return 0;
@@ -869,7 +1192,9 @@ static int request_target(const char *request, char *output, size_t capacity) {
     }
     memcpy(output, start, length);
     output[length] = '\0';
-    return 1;
+    return output[0] == '/' && visible_url_bytes(output) &&
+        (strncmp(space, " HTTP/1.0\r\n", 11) == 0 ||
+         strncmp(space, " HTTP/1.1\r\n", 11) == 0);
 }
 
 static int resolve_location(const endpoint *current, const char *request,
@@ -889,6 +1214,11 @@ static int resolve_location(const endpoint *current, const char *request,
         strncmp(location, "//", 2) == 0) {
         return parse_absolute_location(location, current->use_tls, result);
     }
+    /* A colon in the first path segment denotes a scheme, not a relative
+     * HTTP target. Never reinterpret ftp:, file:, or another scheme as a path. */
+    const char *colon = strchr(location, ':');
+    const char *separator = strpbrk(location, "/?");
+    if (colon != NULL && (separator == NULL || colon < separator)) return 0;
 
     *result = *current;
     if (location[0] == '/') {
@@ -989,7 +1319,13 @@ static char *rewrite_get_request_with_policy(const char *request, const endpoint
         return NULL;
     }
 
-    int written = snprintf(output, capacity, "GET %s HTTP/1.0\r\n", next->target);
+    const char *version = NULL;
+    if (line_end - request >= 9 && memcmp(line_end - 9, " HTTP/1.0", 9) == 0)
+        version = "HTTP/1.0";
+    if (line_end - request >= 9 && memcmp(line_end - 9, " HTTP/1.1", 9) == 0)
+        version = "HTTP/1.1";
+    if (version == NULL) { free(output); return NULL; }
+    int written = snprintf(output, capacity, "GET %s %s\r\n", next->target, version);
     if (written < 0 || (size_t)written >= capacity) {
         free(output);
         return NULL;
@@ -1086,6 +1422,10 @@ static int send_request(const char *host, int port, const char *request_headers,
                         const char *request_body, int request_body_length, int use_tls,
                         const char *credential_header_names,
                         const char *body_output_path, const char *metadata_output_path) {
+    if (!capture_paths_valid(body_output_path, metadata_output_path)) {
+        complain("capture requires distinct absent files in private directories without symlinks");
+        return 7;
+    }
     if (request_body_length < 0 || (request_body_length != 0 && request_body == NULL)) {
         complain("invalid request body length");
         return 2;
@@ -1113,8 +1453,8 @@ static int send_request(const char *host, int port, const char *request_headers,
         return 3;
     }
     strcpy(current.host, host);
-    if (!request_target(request_headers, current.target, sizeof(current.target)) && is_get) {
-        complain("invalid GET request target");
+    if (!request_target(request_headers, current.target, sizeof(current.target))) {
+        complain("invalid request target");
         return 3;
     }
 
@@ -1125,6 +1465,13 @@ static int send_request(const char *host, int port, const char *request_headers,
     }
 
     size_t request_bytes = (size_t)request_body_length;
+    char redirect_chain[MAX_OBSERVATION_BYTES + 1u] = {0};
+    if (metadata_output_path != NULL &&
+        !begin_redirect_observations(&current, redirect_chain)) {
+        free(current_request);
+        complain("initial response observations exceed their bound");
+        return 12;
+    }
     for (int redirects = 0; ; ++redirects) {
         response_head head;
         char body_prefix[16384];
@@ -1136,21 +1483,26 @@ static int send_request(const char *host, int port, const char *request_headers,
         if (result != 0) {
             free(current_request);
             if (body_output_path == NULL && (result == 4 || result == 14) && current.use_tls) return 5;
-            if (body_output_path == NULL && result >= 11) return 7;
             return result;
         }
 
+        if (head.invalid_framing) {
+            close_connection(&opened);
+            free(current_request);
+            complain("malformed or conflicting HTTP framing");
+            return 13;
+        }
+        if (strcasecmp(head.content_encoding, "identity") != 0) {
+            close_connection(&opened);
+            free(current_request);
+            complain("HTTP content encoding is unsupported");
+            return 15;
+        }
         int can_follow = strncmp(current_request, "GET ", 4) == 0 &&
                          redirect_status(head.status) && head.has_location;
         if (!can_follow) {
             FILE *output = stdout;
             if (body_output_path != NULL) {
-                if (head.invalid_framing) {
-                    close_connection(&opened);
-                    free(current_request);
-                    complain("unsupported or malformed HTTP body framing");
-                    return 13;
-                }
                 if (head.content_length > MAX_CAPTURE_BYTES) {
                     close_connection(&opened);
                     free(current_request);
@@ -1166,23 +1518,27 @@ static int send_request(const char *host, int port, const char *request_headers,
                 }
             }
             size_t received_length = 0;
-            int copied = copy_remaining_body(&opened, output, body_prefix,
-                                             response_body_length, &received_length);
+            opened.failure_code = 7;
+            int copied = head.transfer_encoding_kind == 1 ?
+                copy_chunked_body(&opened, output, body_prefix, response_body_length, &received_length) :
+                copy_remaining_body(&opened, output, body_prefix, response_body_length,
+                                    &received_length, head.content_length);
             int copy_failure = opened.failure_code;
             if (body_output_path != NULL && fclose(output) != 0) copied = 0;
-            int metadata_written = write_response_metadata(metadata_output_path, &head,
-                                                           received_length,
-                                                           body_output_path);
+            int metadata_written = copied && write_response_metadata(metadata_output_path, &head,
+                                                           received_length, body_output_path,
+                                                           &current, redirects,
+                                                           redirect_chain);
             close_connection(&opened);
             free(current_request);
-            if (!copied || !metadata_written) return body_output_path != NULL &&
-                !copied && copy_failure >= 11 ? copy_failure : 7;
+            if (!copied || !metadata_written) return !copied &&
+                (copy_failure == 9 || copy_failure >= 11) ? copy_failure : 7;
             if (body_output_path != NULL && head.content_length >= 0 &&
                 (unsigned long long)head.content_length != (unsigned long long)received_length) {
                 complain("response body length does not match Content-Length");
                 return 9;
             }
-            if (body_output_path != NULL && (head.status < 200 || head.status >= 300)) return 10;
+            if (head.status < 200 || head.status >= 300) return 10;
             return 0;
         }
 
@@ -1211,6 +1567,15 @@ static int send_request(const char *host, int port, const char *request_headers,
             return 8;
         }
 
+        if (metadata_output_path != NULL &&
+            !append_redirect_observation(redirect_chain, head.status, &next)) {
+            close_connection(&opened);
+            free(current_request);
+            free(next_request);
+            complain("redirect observations exceed their bound");
+            return 12;
+        }
+
         close_connection(&opened);
         free(current_request);
         current_request = next_request;
@@ -1218,16 +1583,41 @@ static int send_request(const char *host, int port, const char *request_headers,
     }
 }
 
+/* Opt-in capture for the Android app_process command. Ordinary CLI stdout
+ * remains byte-for-byte unchanged when both variables are absent. ICU owns the
+ * single network request and writes exact body and metadata separately. */
+static int send_command_request(const char *host, int port,
+                                const char *request_headers,
+                                const char *request_body, int request_body_length,
+                                int use_tls) {
+    const char *body = getenv("ICU_CAPTURE_BODY_PATH");
+    const char *metadata = getenv("ICU_CAPTURE_METADATA_PATH");
+    if ((body == NULL) != (metadata == NULL)) {
+        complain("capture requires both body and metadata outputs");
+        return 2;
+    }
+    if (body != NULL) {
+        if (body[0] != '/' || metadata[0] != '/' ||
+            strcmp(body, metadata) == 0 || strlen(body) > 4096 ||
+            strlen(metadata) > 4096) {
+            complain("invalid absolute ICU capture paths");
+            return 2;
+        }
+    }
+    return send_request(host, port, request_headers, request_body,
+                        request_body_length, use_tls, "", body, metadata);
+}
+
 int icu_send_http(const char *host, int port, const char *request_headers,
                   const char *request_body, int request_body_length) {
-    return send_request(host, port, request_headers, request_body, request_body_length,
-                        0, "", NULL, NULL);
+    return send_command_request(host, port, request_headers,
+                                request_body, request_body_length, 0);
 }
 
 int icu_send_https(const char *host, int port, const char *request_headers,
                    const char *request_body, int request_body_length) {
-    return send_request(host, port, request_headers, request_body, request_body_length,
-                        1, "", NULL, NULL);
+    return send_command_request(host, port, request_headers,
+                                request_body, request_body_length, 1);
 }
 
 int icu_send_http_with_credentials(const char *host, int port,

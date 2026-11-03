@@ -9,14 +9,43 @@ its own failure. HTTP rejection statuses retain their body and exact status.
 CaptureFailure distinguishes invalid request, connection, TLS, request write,
 malformed/unsupported framing, redirect, truncation, timeout, resource limit,
 capture I/O, invalid UTF-8 and unsupported encoding. The native integer result
-is converted at this boundary. Stdout commands keep their existing outcomes.
+is converted at this boundary. Stdout commands retain typed HTTP/framing errors.
+
+The native stdout command now retains HTTP failure status 10 and the transport's
+typed framing statuses, including malformed-response status 13. The TLS
+identity mapping to status 5 is preserved. A complete error body does not turn
+HTTP 500 into command success.
+
+On Linux/Android, capture ancestor traversal uses search descriptors (`O_PATH`)
+rather than requiring directory listing. Directory-only/no-symlink checks,
+private final-parent ownership/mode and exclusive leaf creation are unchanged.
+The native regression uses an actual search-only ancestor and an unprivileged
+child; it also requires the existing-file refusal to survive the repair. These
+are the retained fixes from merged android-NDK's ICU qualification, now applied
+to the maintained transport owner. Fresh current-head tests remain required.
 
 Capture directories use mkdtemp (0700). Exclusive, non-symlink file creation
 uses 0600 regardless of umask. Both files and the directory are removed before
 returning a response/failure. Captured bodies are bounded to 8 MiB; both declared
 length and streaming size are checked. Invalid/duplicate Content-Length and
-Transfer-Encoding are rejected explicitly rather than decoded as body bytes.
-GET/POST requests use HTTP/1.0, identity encoding, and Connection: close.
+conflicting Transfer-Encoding are rejected explicitly. A single chunked coding
+is decoded within the 8 MiB capture bound; extensions, trailers, truncated chunks
+and extra bytes fail. Capture paths must have no symlink components and must
+name distinct absent files in an owner-private directory. Metadata is written
+only after complete body framing passes. Declared-length mismatch also fails
+for the stdout command. POST metadata retains its actual request target.
+Unexpected content encodings fail without a hidden decoder or runtime fallback.
+GET/POST support HTTP/1.0 and HTTP/1.1, identity encoding and Connection: close.
+
+Private captures also retain an ordered `redirect_chain`. Its ASCII `R1`
+wire begins with the actually selected initial endpoint as `<byte-length> <URL>`
+and appends `<status> <byte-length> <URL>` for each followed redirect. URL
+punctuation is data, not a separator. The redirect count and resolved final URL
+remain independent fields. The total metadata bound is 8192 bytes; a capture
+whose observations exceed it fails rather than reporting incomplete provenance.
+The caller retains the exact requested URL separately, including any spelling
+that projects to the selected default path/port. This metadata does not grant
+application admission or attest a Binder transaction.
 
 Socket connection, reads and writes have 15-second bounds. DNS resolution uses
 the host resolver and has no ICU-specific deadline yet. This remaining limit
@@ -30,6 +59,7 @@ Preserve these exact executable fixtures while moving ownership; keep ICU's
 client result interpretation here. Do not delete this provider before installed
 ICU acceptance passes against the replacement.
 
-Kitchen owns tasks/icu-finish/build.grease. AICI owns icu/accept.grease and
-independent disposable HTTP/TLS fixtures. Flexible Pipes holds opening, build,
-acceptance and merge receipts. Android A1 and C67 physical execution is NOT_RUN.
+AICI owns `icu/accept.grease`, `icu/command-accept.grease` and independent
+disposable HTTP/TLS fixtures. This continuation is direct one-off work.
+Historical Kitchen/Flexible Pipes receipts remain historical. Android A1 and
+C67 physical execution is NOT_RUN.

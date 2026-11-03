@@ -1,0 +1,50 @@
+module CommandChecks
+
+import Data.Text
+import CommandOptions
+import Network.HTTP
+import System
+
+refuses : List Text → Bool
+refuses arguments = case checked_command_options arguments of
+  Left _ ⇒ True
+  Right _ ⇒ False
+
+rendered : List Text → Text
+rendered arguments = case checked_command_options arguments of
+  Left _ ⇒ ""
+  Right command ⇒ case render_request_parts_at_version command.version command.operation command.public_headers of
+    Left _ ⇒ ""
+    Right wire ⇒ http_request_head_text (rendered_request_head wire)
+
+check : Text → Bool → IO ()
+check name True = putStrLn ("PASS " ++ name)
+check name False = do
+  putStrLn ("FAIL " ++ name)
+  exitFailure
+
+main : IO ()
+main = do
+  check "existing command default preserved"
+    (rendered ["get", "https://example.com/"] ≟
+      "GET / HTTP/1.0\r\nHost: example.com\r\nConnection: close\r\nAccept-Encoding: identity\r\nUser-Agent: idric-net/0.1\r\n\r\n")
+  check "once-encoded query and actual public headers"
+    (rendered ["--http1.1", "--header", "User-Agent", "ICU/0.1", "--header", "Accept", "text/html",
+      "--header", "Accept-Language", "en-US,en;q=0.8", "get", "https://google.com/search?q=caf%C3%A9+%252F"] ≟
+      "GET /search?q=caf%C3%A9+%252F HTTP/1.1\r\nHost: google.com\r\nConnection: close\r\nAccept-Encoding: identity\r\nUser-Agent: ICU/0.1\r\nAccept: text/html\r\nAccept-Language: en-US,en;q=0.8\r\n\r\n")
+  check "refuse header injection"
+    (refuses ["--header", "Accept", "text/html\r\nCookie: stolen", "get", "https://example.com/"])
+  check "refuse framing override"
+    (refuses ["--header", "Content-Length", "99", "get", "https://example.com/"])
+  check "refuse host override"
+    (refuses ["--header", "Host", "another.example", "get", "https://example.com/"])
+  check "refuse command credentials"
+    (refuses ["--header", "Cookie", "secret=1", "get", "https://example.com/"])
+  check "refuse duplicate case-insensitive headers"
+    (refuses ["--header", "Accept", "text/html", "--header", "aCcEpT", "*/*", "get", "https://example.com/"])
+  check "refuse oversized header"
+    (refuses ["--header", "User-Agent", pack (replicate 1025 'x'), "get", "https://example.com/"])
+  check "refuse incomplete header option"
+    (refuses ["--header", "Accept", "get", "https://example.com/"])
+  check "POST body is not parsed as options"
+    (not (refuses ["post", "https://example.com/", "--header"]))

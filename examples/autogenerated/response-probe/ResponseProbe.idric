@@ -52,4 +52,15 @@ main = do
   case drop 1 arguments of
     [mode, address] ⇒ run mode address ""
     ["bytes", address, output] ⇒ run "bytes" address output
+    ["range", address, start, size, output] ⇒ case parse_url address of
+      Left _ ⇒ die "invalid URL"
+      Right destination ⇒
+        if length start ≟ 0 || length size ≟ 0 ||
+           not (all isDigit (unpack start) && all isDigit (unpack size))
+          then die "invalid range"
+          else do
+            captured ← fetch_range_response destination (cast start) (cast size)
+            case captured of
+              Left failure ⇒ die (failure_description failure)
+              Right response ⇒ save_bytes response output
     _ ⇒ die "requires text|post|headers URL or bytes URL OUTPUT"

@@ -6,26 +6,8 @@ import Network.Types
 import Network.URL
 import System
 import Transport
+import CommandOptions
 
-
-usage : String
-usage =
-  "usage:\n" ++
-  "  icu get  http://host/path\n" ++
-  "  icu get  https://host/path\n" ++
-  "  icu post http://host/path BODY\n" ++
-  "  icu post https://host/path BODY"
-
-parse_command : List String → Either String request
-parse_command ["get", text] =
-  case parse_url text of
-    Left problem => Left problem
-    Right target_url => Right (get target_url)
-parse_command ["post", text, body] =
-  case parse_url text of
-    Left problem => Left problem
-    Right target_url => Right (post target_url (http_body_from_string body))
-parse_command _ = Left usage
 
 fail_with : String → IO ()
 fail_with problem = do
@@ -40,13 +22,13 @@ exit_code result = cast (exit_status_number (process_exit_status result))
 
 run : List String → IO ()
 run arguments =
-  case parse_command arguments of
-    Left problem => fail_with problem
-    Right value => do
-      outcome ← send_request value
+  case checked_command_options arguments of
+    Left problem ⇒ fail_with problem
+    Right command ⇒ do
+      outcome ← send_public_request_at_version command.version command.operation command.public_headers
       case outcome of
-        Left problem => fail_with problem
-        Right result => exitWith (exit_code result)
+        Left problem ⇒ fail_with problem
+        Right result ⇒ exitWith (exit_code result)
 
 %export "dex:icu_checked_main"
 main : IO ()
@@ -54,4 +36,4 @@ main = do
   arguments ← getArgs
   case arguments of
     _ :: rest => run rest
-    [] => fail_with usage
+    [] => fail_with command_usage

@@ -101,6 +101,41 @@ static int contains(const char *text, const char *piece) {
     return strstr(text, piece) != NULL;
 }
 
+static int chunk_case(const char *wire, const char *expected, int should_pass) {
+    int pair[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) return 0;
+    close(pair[1]); /* Remaining framing is deliberately supplied as the read prefix. */
+    connection opened = {0};
+    opened.socket_fd = pair[0];
+    FILE *output = tmpfile();
+    if (output == NULL) { close(pair[0]); return 0; }
+    size_t received = 0;
+    int passed = copy_chunked_body(&opened, output, wire, strlen(wire), &received);
+    int matches = passed == should_pass;
+    if (passed) {
+        char body[128] = {0};
+        rewind(output);
+        size_t count = fread(body, 1, sizeof(body), output);
+        matches = matches && count == strlen(expected) && received == count &&
+                  memcmp(body, expected, count) == 0;
+    }
+    fclose(output);
+    close(pair[0]);
+    return matches;
+}
+
+static int test_chunked_framing(void) {
+    return chunk_case("2\r\nhe\r\n3\r\nllo\r\n0\r\n\r\n", "hello", 1) &&
+        chunk_case("0\r\n\r\n", "", 1) &&
+        chunk_case("5\r\nhell", "", 0) &&
+        chunk_case("5\nhello\r\n0\r\n\r\n", "", 0) &&
+        chunk_case("G\r\nhello\r\n0\r\n\r\n", "", 0) &&
+        chunk_case("5;extension=x\r\nhello\r\n0\r\n\r\n", "", 0) &&
+        chunk_case("5\r\nhello\r\n0\r\nTrailer: x\r\n\r\n", "", 0) &&
+        chunk_case("0\r\n\r\nextra", "", 0) &&
+        chunk_case("FFFFFFFFFFFFFFFF\r\n", "", 0);
+}
+
 static endpoint test_endpoint(int use_tls, int port, const char *host, const char *target) {
     endpoint value;
     memset(&value, 0, sizeof(value));
@@ -111,7 +146,33 @@ static endpoint test_endpoint(int use_tls, int port, const char *host, const cha
     return value;
 }
 
+static int test_redirect_observations(void) {
+    endpoint first = test_endpoint(1, 443, "example.com", "/");
+    endpoint next = test_endpoint(0, 80, "example.org", "/next?x=302;end");
+    char observations[MAX_OBSERVATION_BYTES + 1u];
+    if (!begin_redirect_observations(&first, observations) ||
+        strcmp(observations, "R1 20 https://example.com/") != 0 ||
+        !append_redirect_observation(observations, 302, &next) ||
+        strcmp(observations, "R1 20 https://example.com/302 33 http://example.org/next?x=302;end") != 0)
+        return 0;
+    /* Refuse excessive provenance rather than silently retaining a prefix. */
+    memset(next.target, 'a', sizeof(next.target)-1U);
+    next.target[0] = '/';
+    next.target[sizeof(next.target)-1U] = '\0';
+    if (append_redirect_observation(observations, 307, &next) ||
+        begin_redirect_observations(&next, observations)) return 0;
+    return 1;
+}
+
 int main(void) {
+    if (!test_redirect_observations()) {
+        fputs("ordered bounded redirect observations failed\n", stderr);
+        return 1;
+    }
+    if (!test_chunked_framing()) {
+        fputs("bounded chunked response framing failed\n", stderr);
+        return 1;
+    }
     if (!test_proxy_configuration()) {
         fputs("configured proxy or CONNECT boundary failed\n", stderr);
         return 1;
@@ -153,6 +214,15 @@ int main(void) {
     }
     free(same_request);
 
+    char *version_request = rewrite_get_request_with_policy(
+        "GET /start HTTP/1.1\r\nHost: example.com\r\n\r\n", &same, 1, "");
+    if (version_request == NULL || !contains(version_request, "GET /next HTTP/1.1\r\n")) {
+        free(version_request);
+        fputs("redirect lost the explicit HTTP version\n", stderr);
+        return 1;
+    }
+    free(version_request);
+
     char *cross_request = rewrite_get_request_with_policy(
         request, &other_host, 0, declared_credentials);
     if (cross_request == NULL ||
@@ -168,5 +238,6 @@ int main(void) {
     free(cross_request);
 
     puts("PASS configured HTTPS proxy, CONNECT framing and redirect credentials");
+    puts("PASS ordered response-owner redirect observations and excessive-chain refusal");
     return 0;
 }
