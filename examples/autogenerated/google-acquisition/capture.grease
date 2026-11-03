@@ -1,0 +1,59 @@
+#!/usr/bin/env grease
+# Run the actual checked ICU executable; original body and observations stay
+# private. HTTP completion and the independent semantic result are separate.
+set -eu -o pipefail
+if (len(ARGV) !== 4) { echo 'usage: grease capture.grease ICU_EXECUTABLE AICI GREASE NEW_EVIDENCE' >&2; exit 2 }
+var icu = ARGV[0]
+var acceptance = ARGV[1]
+var grease = ARGV[2]
+var evidence = ARGV[3]
+for path in "$icu" "$acceptance" "$grease" "$evidence" {
+  if (len(path) === 0 or path[0] !== '/') { exit 2 }
+}
+if test -e "$evidence" { echo 'FAIL reused acquisition matrix' >&2; exit 2 }
+umask 077
+mkdir -m 700 -p "$evidence"
+sha256sum "$icu" > "$evidence/executable.sha256"
+printf 'case\tcommand_exit\tHTTP_status\tbody_bytes\tsemantic_exit\n' > "$evidence/summary.tsv"
+var query = 'open+source+guitar+chord+transposition'
+for profile in http10 http11 www-http11 accept language agent {
+  var case_root = "$evidence/$profile"
+  mkdir -m 700 "$case_root"
+  var origin = 'https://google.com'
+  var arguments = ['--http1.1']
+  if (profile === 'http10') { setvar arguments = ['--http1.0'] }
+  if (profile === 'www-http11') { setvar origin = 'https://www.google.com' }
+  if (profile === 'accept') { setvar arguments = ['--http1.1', '--header', 'Accept', 'text/html'] }
+  if (profile === 'language') { setvar arguments = ['--http1.1', '--header', 'Accept', 'text/html', '--header', 'Accept-Language', 'en-US,en;q=0.8'] }
+  if (profile === 'agent') { setvar arguments = ['--http1.1', '--header', 'User-Agent', 'ICU/0.1', '--header', 'Accept', 'text/html', '--header', 'Accept-Language', 'en-US,en;q=0.8'] }
+  var requested = origin ++ '/search?q=' ++ query
+  printf '%s\n' @arguments get "$requested" > "$case_root/arguments.txt"
+  printf 'cookie_policy\tNONE\nTLS\tVERIFY_CERTIFICATE_AND_HOST\nwire_octets\tNOT_CAPTURED\nbody_layer\tTRANSFER_DECODED_IDENTITY_ENTITY\n' > "$case_root/policy.tsv"
+  try {
+    env ICU_CAPTURE_BODY_PATH="$case_root/body" ICU_CAPTURE_METADATA_PATH="$case_root/metadata.tsv" \
+      timeout 60 "$icu" @arguments get "$requested" > "$case_root/stdout.bin" 2> "$case_root/stderr.txt"
+  }
+  var command_status = _error.code
+  printf '%s\n' "$command_status" > "$case_root/command.exit"
+  var status = 'NOT_OBSERVED'
+  var size = 'NOT_OBSERVED'
+  var semantic = 'NOT_RUN'
+  if test -f "$case_root/body" { sha256sum "$case_root/body" > "$case_root/body.sha256" }
+  if test -f "$case_root/metadata.tsv" {
+    sha256sum "$case_root/metadata.tsv" > "$case_root/metadata.sha256"
+    setvar status = $(awk -F '\t' '$1=="http_status"{print $2}' "$case_root/metadata.tsv")
+    setvar size = $(awk -F '\t' '$1=="received_length"{print $2}' "$case_root/metadata.tsv")
+  }
+  if (command_status === 0) {
+    test -s "$case_root/body"
+    test -s "$case_root/metadata.tsv"
+    test "$(wc -c < "$case_root/body")" = "$size"
+    try {
+      "$grease" "$acceptance/ib-source/reader/classify-google.grease" "$case_root/body" "$case_root/semantic" > "$case_root/semantic.log" 2>&1
+    }
+    setvar semantic = str(_error.code)
+  }
+  printf '%s\t%s\t%s\t%s\t%s\n' "$profile" "$command_status" "$status" "$size" "$semantic" >> "$evidence/summary.tsv"
+}
+cat "$evidence/summary.tsv"
+printf 'matrix_execution\tCOMPLETE\nGoogle_results\tSEE_PER_CASE_SEMANTIC_EXIT\nAndroid_ART\tNOT_RUN\nphysical_ARM\tNOT_RUN\n' > "$evidence/receipt.tsv"

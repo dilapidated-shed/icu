@@ -1,0 +1,68 @@
+module CommandOptions
+
+import Data.Text
+import Network.HTTP
+import Network.Types
+import Network.URL
+
+public export
+record CommandOptions where
+  constructor CheckedCommandOptions
+  version : http_version
+  operation : request
+  public_headers : List request_header
+
+export
+command_usage : Text
+command_usage =
+  "usage: icu [--http1.0|--http1.1] " ++
+  "[--header User-Agent|Accept|Accept-Language VALUE] get|post URL [BODY]"
+
+lower_ascii : Char → Char
+lower_ascii character =
+  if character >= 'A' && character <= 'Z'
+    then chr (ord character + 32) else character
+
+header_key : Text → Text
+header_key = pack . map lower_ascii . unpack
+
+public_header : Text → Text → Either Text request_header
+public_header name value =
+  if not (elem (header_key name) ["user-agent", "accept", "accept-language"])
+    then Left "ICU command accepts only User-Agent, Accept and Accept-Language headers"
+  else if length (unpack value) > 1024
+    then Left "ICU command header exceeds 1024 characters"
+  else make_header name value
+
+command_request : List Text → Either Text request
+command_request ["get", address] = do
+  destination ← parse_url address
+  Right (get destination)
+command_request ["post", address, body] = do
+  destination ← parse_url address
+  Right (post destination (http_body_from_string body))
+command_request _ = Left command_usage
+
+-- Consume options only before the operation. A POST body beginning with '--'
+-- remains a body, and a URL or body never becomes a header/command option.
+options : http_version → List request_header → List Text → Number →
+  List Text → Either Text CommandOptions
+options version headers names budget ("--http1.0" :: rest) =
+  options http_one_zero headers names budget rest
+options version headers names budget ("--http1.1" :: rest) =
+  options http_one_one headers names budget rest
+options version headers names budget ("--header" :: name :: value :: rest) =
+  if elem (header_key name) names then Left "ICU command refuses duplicate headers"
+  else if budget + length (unpack name) + length (unpack value) + 4 > 4096
+    then Left "ICU command headers exceed 4096 characters"
+  else do
+    checked ← public_header name value
+    options version (headers ++ [checked]) (header_key name :: names)
+      (budget + length (unpack name) + length (unpack value) + 4) rest
+options version headers names budget arguments = do
+  operation ← command_request arguments
+  Right (CheckedCommandOptions version operation headers)
+
+export
+checked_command_options : List Text → Either Text CommandOptions
+checked_command_options = options http_one_zero [] [] 0

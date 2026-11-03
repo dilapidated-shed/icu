@@ -103,6 +103,17 @@ send_request_at_version version value =
     Left problem => pure (Left problem)
     Right prepared => send_prepared_request (request_url value) prepared
 
+-- CommandOptions admits only noncredential representation headers. This path
+-- uses the same two existing JNI primitives as the ordinary managed command.
+-- Callers with declared credential headers must keep using the credential API.
+export
+send_public_request_at_version : http_version → request → List request_header →
+  IO (Either String transport_result)
+send_public_request_at_version version value headers =
+  case render_request_parts_at_version version value headers of
+    Left problem ⇒ pure (Left problem)
+    Right prepared ⇒ send_prepared_request (request_url value) prepared
+
 prepare_request value =
   render_request_parts value
 
