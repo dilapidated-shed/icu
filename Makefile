@@ -1,4 +1,5 @@
 IDRIC ?= idris2
+.DEFAULT_GOAL := all
 ICK ?=
 CC = $(ICK)
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic

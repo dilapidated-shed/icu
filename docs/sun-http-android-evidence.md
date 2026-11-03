@@ -1,5 +1,16 @@
 # HTTP and Android continuation — 2026-10-23
 
+Historical receipt: its direct-DEX IO blocker was subsequently resolved by the
+maintained compiler/consumer path. IB source
+`f43af99856a8ad4161114863e681c118e38c2218` builds the actual ICU5b0ab280 command
+through android-NDK153e7fc8/frontend740bbf2b and executes it through the real
+Shizuku/Grease worker on API29/API34. See the
+[source-bound producer](https://github.com/isomorphisms/ib/actions/runs/41370466399)
+and [independent consumer](https://github.com/isomorphisms/ai-ci/actions/runs/41376593837).
+These are not fresh acceptance of later ICU command changes, and they do not
+establish Google public results or physical ARM execution. The dated failures
+below remain historical evidence rather than a current reason to add a runtime.
+
 This is a partial executable continuation, not ICU Android completion.
 
 ## Implementation

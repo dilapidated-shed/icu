@@ -30,6 +30,11 @@ The existing IB producer demonstrates checked ICU IO at compiler
 docs/sun-http-android-evidence.md is historical and is not a reason to invent
 another runtime. Changed command source still needs fresh DEX/ART acceptance.
 
-Implementation and qualification: PENDING. No fallback language or backend is
-selected. The first language boundary, if encountered, must be recorded here
-with the actual compiler diagnostic and smallest reproduction.
+The first hosted attempt (ai-ci run41569944402, artifact13202425072, archive
+SHA256 2cf45c57a441919cb6bd5f5d4412496ddebbb7b398f100a57e671ad5c72b4412)
+failed before acquisition. `make` selected the first `require-ick` target and
+did not build ICU; the separate command checker also omitted `-p idric_net`.
+The default build goal is now explicitly `all`, the independent caller requests
+`make all`, and the checker declares its network package. These are build
+repairs, not Google or IO-lowering results. Fresh qualification remains PENDING.
+No fallback language or backend is selected.
